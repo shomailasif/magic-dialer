@@ -74,6 +74,116 @@ function edgeVoiceFor(locale) {
   return NEURAL_VOICES[base] || "en-US-JennyNeural";
 }
 
+/**
+ * Voice styles the operator can choose from in the portal (voice v2):
+ *
+ *   human    — natural, even, plainspoken (the default; unchanged behavior).
+ *   frank    — business-like, direct, decisive (deeper/male neural voices).
+ *   friendly — warm, upbeat, approachable (brighter female neural voices).
+ *
+ * Style is locale-aware: each style has its own best neural voice per
+ * language, and all three tiers (edge, HeadTTS, Windows) honor a small
+ * per-style pacing tweak. English defaults are byte-for-byte the old
+ * behavior, so existing installs hear no change.
+ */
+
+// Franks/direct voices (male, businesslike) per language for the "frank" style.
+const FRANK_VOICES = {
+  en: "en-US-DavisNeural",
+  "en-us": "en-US-DavisNeural",
+  "en-gb": "en-GB-RyanNeural",
+  "en-au": "en-AU-WilliamNeural",
+  "en-ca": "en-CA-LiamNeural",
+  "en-in": "en-IN-PrabhatNeural",
+  fr: "fr-FR-RemyNeural",
+  "fr-fr": "fr-FR-RemyNeural",
+  "fr-ca": "fr-CA-AntoineNeural",
+  de: "de-DE-ConradNeural",
+  es: "es-ES-AlvaroNeural",
+  "es-es": "es-ES-AlvaroNeural",
+  "es-mx": "es-MX-JorgeNeural",
+  pt: "pt-BR-AntonioNeural",
+  "pt-br": "pt-BR-AntonioNeural",
+  "pt-pt": "pt-PT-DuarteNeural",
+  hi: "hi-IN-MadhurNeural",
+  ar: "ar-SA-HamedNeural",
+  ru: "ru-RU-DmitryNeural",
+  tr: "tr-TR-AhmetNeural",
+  uk: "uk-UA-OstapNeural",
+  it: "it-IT-DiegoNeural",
+  pl: "pl-PL-MarekNeural",
+  nl: "nl-NL-MaartenNeural",
+  ko: "ko-KR-InJoonNeural",
+  ja: "ja-JP-KeitaNeural",
+  "zh-cn": "zh-CN-YunxiNeural",
+  cs: "cs-CZ-AntoninNeural",
+  el: "el-GR-NestorasNeural",
+  fi: "fi-FI-HarriNeural",
+  sv: "sv-SE-MattiasNeural",
+  da: "da-DK-JeppeNeural",
+  nb: "nb-NO-FinnNeural",
+  he: "he-IL-AvriNeural",
+  id: "id-ID-ArdiNeural",
+  th: "th-TH-NiwatNeural",
+  vi: "vi-VN-NamMinhNeural",
+  ms: "ms-MY-FaizNeural",
+  sk: "sk-SK-LukasNeural",
+  sl: "sl-SI-RokNeural",
+  ro: "ro-RO-EmilNeural",
+};
+
+// Brighter/upbeat voices for the "friendly" style. Most locales already have
+// a warm female default in NEURAL_VOICES, so only override where a distinctly
+// friendlier option exists.
+const FRIENDLY_VOICES = {
+  en: "en-US-AriaNeural",
+  "en-us": "en-US-AriaNeural",
+  "en-gb": "en-GB-SoniaNeural",
+  "en-au": "en-AU-NatashaNeural",
+  "en-ca": "en-CA-ClaraNeural",
+  "en-in": "en-IN-NeerjaNeural",
+  fr: "fr-FR-DeniseNeural",
+  "fr-fr": "fr-FR-DeniseNeural",
+  de: "de-DE-KatjaNeural",
+  es: "es-ES-ElviraNeural",
+  "es-es": "es-ES-ElviraNeural",
+  "es-mx": "es-MX-DaliaNeural",
+  pt: "pt-BR-FranciscaNeural",
+  "pt-br": "pt-BR-FranciscaNeural",
+  "pt-pt": "pt-PT-RaquelNeural",
+  hi: "hi-IN-SwaraNeural",
+};
+
+const VALID_STYLES = new Set(["human", "frank", "friendly"]);
+
+/** Normalize a style to one of human|frank|friendly (default human). */
+function normalizeStyle(style) {
+  const s = String(style || "").toLowerCase().trim();
+  return VALID_STYLES.has(s) ? s : "human";
+}
+
+/** Full voice for a locale + style. Falls back gracefully to the base voice. */
+function edgeVoiceFor(locale, style) {
+  const raw = String(locale || "en");
+  const full = raw.toLowerCase();
+  const base = full.split("-")[0];
+  const human = NEURAL_VOICES[full] || NEURAL_VOICES[base] || "en-US-JennyNeural";
+  const s = normalizeStyle(style);
+  const table = s === "frank" ? FRANK_VOICES : s === "friendly" ? FRIENDLY_VOICES : null;
+  if (table) {
+    const styled = table[full] || table[base];
+    if (styled) return styled;
+  }
+  return human;
+}
+
+/** Speech pacing multiplier per style (frank is a touch crisper). */
+function styleRate(style, rate) {
+  const r = Number(rate) || 1;
+  if (normalizeStyle(style) === "frank") return Math.min(1.2, r * 1.06);
+  return r;
+}
+
 let PYTHON = null;
 
 /**
@@ -106,13 +216,14 @@ function resolvePython() {
 }
 
 /** Speak via edge-tts (Python). Returns true on success. */
-function speakEdge(text, { locale = "en", rate = 1 } = {}) {
+function speakEdge(text, { locale = "en", rate = 1, style = "human" } = {}) {
   if (process.env.AUTODIAL_NO_EDGE_TTS === "1") return false;
   const python = resolvePython();
   if (!python) return false;
   const file = path.join(TMP, `edge-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.mp3`);
-  const rateArg = rate === 1 ? "+0%" : `${rate > 1 ? "+" : ""}${Math.round((rate - 1) * 60)}%`;
-  const voice = edgeVoiceFor(locale);
+  const effRate = styleRate(style, rate);
+  const rateArg = effRate === 1 ? "+0%" : `${effRate > 1 ? "+" : ""}${Math.round((effRate - 1) * 60)}%`;
+  const voice = edgeVoiceFor(locale, style);
   try {
     const r = spawnSync(
       python,
@@ -131,11 +242,11 @@ function speakEdge(text, { locale = "en", rate = 1 } = {}) {
 }
 
 /** Speak via HeadTTS (local Kokoro server). Returns true on success. */
-async function speakHeadTTS(text, { locale = "en", rate = 1 } = {}) {
+async function speakHeadTTS(text, { locale = "en", rate = 1, style = "human" } = {}) {
   if (process.env.AUTODIAL_NO_HEADTTS === "1") return false;
   const file = path.join(TMP, `headtts-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.wav`);
   try {
-    const ok = await synthViaServer(text, file, locale, rate);
+    const ok = await synthViaServer(text, file, locale, styleRate(style, rate));
     if (!ok || !fs.existsSync(file) || fs.statSync(file).size < 1000) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
       return false;
@@ -231,11 +342,11 @@ function playFile(file) {
  *   edge-tts -> HeadTTS -> Windows.
  * Returns { engine, ok } so callers know which tier was used.
  */
-async function speak(text, { voice, rate = 1, volume = 100, locale = "en" } = {}) {
-  if (speakEdge(text, { locale, rate })) return { engine: "edge", ok: true };
-  if (await speakHeadTTS(text, { locale, rate })) return { engine: "headtts", ok: true };
-  const ok = speakWindows(text, { rate, volume });
+async function speak(text, { voice, rate = 1, volume = 100, locale = "en", style = "human" } = {}) {
+  if (speakEdge(text, { locale, rate, style })) return { engine: "edge", ok: true };
+  if (await speakHeadTTS(text, { locale, rate, style })) return { engine: "headtts", ok: true };
+  const ok = speakWindows(text, { rate: styleRate(style, rate), volume });
   return { engine: "windows", ok };
 }
 
-module.exports = { speak, speakEdge, speakHeadTTS, speakWindows, edgeVoiceFor };
+module.exports = { speak, speakEdge, speakHeadTTS, speakWindows, edgeVoiceFor, normalizeStyle, styleRate };

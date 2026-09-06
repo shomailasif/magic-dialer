@@ -68,6 +68,18 @@ async function api(pathname, opts = {}, cookie) {
   const hbBad = await api("/api/heartbeat", { method: "POST", body: { token } });
   check("invalid lang never reaches the agent (stays 'auto')", bad.status === 200 && hbBad.data.config.lang === "auto");
 
+  // Voice style: defaults to human, round-trips frank/friendly, rejects junk.
+  const hbVS = await api("/api/heartbeat", { method: "POST", body: { token } });
+  check("heartbeat defaults voiceStyle to human", hbVS.data.config.voiceStyle === "human");
+  for (const style of ["frank", "friendly"]) {
+    const p = await api(`/api/customer/${token}`, { method: "PATCH", body: { settings: { voiceStyle: style } } }, cookie);
+    const h = await api("/api/heartbeat", { method: "POST", body: { token } });
+    check(`voiceStyle ${style} round-trips`, p.status === 200 && h.data.config.voiceStyle === style);
+  }
+  const badVS = await api(`/api/customer/${token}`, { method: "PATCH", body: { settings: { voiceStyle: "robotic" } } }, cookie);
+  const hbVS2 = await api("/api/heartbeat", { method: "POST", body: { token } });
+  check("invalid voiceStyle never reaches the agent", badVS.status === 200 && hbVS2.data.config.voiceStyle === "friendly");
+
   srv.close && srv.close();
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
 

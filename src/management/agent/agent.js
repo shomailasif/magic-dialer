@@ -77,6 +77,7 @@ function applyPortalConfig(config, portalCfg, cfgPath) {
   if (Array.isArray(portalCfg.callList)) set("callList", portalCfg.callList.map((n) => String(n).trim()).filter(Boolean));
   if (typeof portalCfg.searchEnabled === "boolean") set("searchEnabled", portalCfg.searchEnabled);
   if (typeof portalCfg.lang === "string" && /^(en|es|fr|de|pt|hi|auto)$/.test(portalCfg.lang.trim())) set("lang", portalCfg.lang.trim());
+  if (typeof portalCfg.voiceStyle === "string" && /^(human|frank|friendly)$/.test(portalCfg.voiceStyle.trim())) set("voiceStyle", portalCfg.voiceStyle.trim());
   if (changed) {
     saveConfig(config, cfgPath);
     pushActivity(config, "Admin updated the sales form from the portal - applied.");
@@ -167,6 +168,7 @@ async function runAgent(opts = {}) {
     config = config || {};
     config.machineId = config.machineId || crypto.randomUUID();
     config.lang = config.lang || "en";
+    config.voiceStyle = config.voiceStyle || "human";
     config.portalUrl = opts.portalUrl || (await ask("Magic Dialer portal URL (from your admin):"));
     config.token = opts.token || (await ask("Your Magic Dialer access token (from your admin):"));
     saveConfig(config, cfgPath);
@@ -244,6 +246,7 @@ async function runAgent(opts = {}) {
         portal,
         learning: config.learning,
         locale: config.lang || "en",
+        voiceStyle: config.voiceStyle || "human",
         onLog: (m) => { log(m); ui({ line: m }); },
         onMode: (m) => ui({ mode: m }),
       });

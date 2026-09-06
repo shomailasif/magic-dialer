@@ -1,0 +1,5 @@
+TO: t@s.com
+SUBJECT: Lead (B)
+NOTE: No SMTP configured — recorded to outbox.
+
+outbox test B

@@ -36,12 +36,13 @@ async function voiceCall({
   portal,
   learning,
   locale = "en",
+  voiceStyle = "human",
   onLog = () => {},
   onMode = () => {},
   speakFn,
   listenFn,
 }) {
-  const say = speakFn || (async (text) => { onMode("speaking"); onLog("AGENT: " + text); return speak(text); });
+  const say = speakFn || (async (text) => { onMode("speaking"); onLog("AGENT: " + text); return speak(text, { locale, style: voiceStyle }); });
   const listen = listenFn || (async () => { onMode("listening"); onLog("(listening...)"); const t = await hear({ timeoutMs: 6000, locale }); if (t) onLog("LEAD:  " + t); else onLog("(nothing heard)"); return t; });
 
   onLog("Starting live call…");
