@@ -835,6 +835,36 @@ var require_brain_i18n = __commonJS({
     function pick(arr, seed) {
       return arr[Math.abs(seed) % arr.length];
     }
+    var FRIENDLY_BY_LOCALE = {
+      en: [
+        "Ha, fair enough - I love a conversation that stays interesting. Quick answer for you, then back to business.",
+        "You know what, that's a good question and you deserve a straight one. Here's the honest version, then let me loop back to the reason I called.",
+        "Honestly? I'm the type who actually likes hearing that. Let me give you a real answer and then one quick question back.",
+        "I appreciate you talking to me like a person - that's rare on these calls. Straight answer coming up.",
+        "Totally fair play. Let me answer that in plain English, then I've got a thirty-second thing for you."
+      ],
+      es: ["Buena pregunta - te la respondo con franqueza y volvemos al grano."],
+      fr: ["Bonne question - je r\xE9ponds franchement, puis on reprend le fil."],
+      de: ["Berechtigte Frage - ich antworte offen und wir kommen schnell zur Sache."],
+      pt: ["Boa pergunta - respondo com franqueza e voltamos ao assunto."],
+      hi: ["Achha sawal hai - seedha jawaab deta hoon, phir ek chhota sa sawal."]
+    };
+    var QUESTION_BY_LOCALE = {
+      en: /\b(how|what|why|when|who|where|which|can you|could you|will you|do you|are you|is it|are there)\b/i,
+      es: /\b(c\u00f3mo|qu\u00e9|por qu\u00e9|cu\u00e1ndo|qui\u00e9n|d\u00f3nde|puedes|puede)\b/i,
+      fr: /\b(comment|quoi|pourquoi|quand|qui|o\u00f9|pouvez|peux)\b/i,
+      de: /\b(warum|was|wie|wann|wer|wo|k\u00f6nnen|kannst)\b/i,
+      pt: /\b(como|o que|por que|quando|quem|onde|pode|voc\u00ea)\b/i,
+      hi: /\b(kya|kaise|kyun|kab|kaun|kahan|aap)\b/i
+    };
+    var STOP_WORDS = /* @__PURE__ */ new Set(
+      ["the", "a", "an", "to", "of", "on", "in", "for", "and", "or", "with", "about", "my", "i", "you", "it", "me", "is", "are", "be", "have", "has", "will", "would", "can", "do", "we", "they", "this", "that", "but", "so", "because", "not", "just", "only"]
+    );
+    function signatureOf(text) {
+      const words = String(text || "").toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+      const uniq = Array.from(new Set(words)).slice(0, 2);
+      return uniq.join(" ");
+    }
     module2.exports = {
       normalizeLocale,
       detectLanguage,
@@ -857,7 +887,10 @@ var require_brain_i18n = __commonJS({
       ACK_BY_LOCALE,
       CALLBACK_CLOSE_BY_LOCALE,
       POOLS_BY_LOCALE,
-      SUPPORTED_LOCALES: Object.keys(POOLS_BY_LOCALE)
+      SUPPORTED_LOCALES: Object.keys(POOLS_BY_LOCALE),
+      FRIENDLY_BY_LOCALE,
+      QUESTION_BY_LOCALE,
+      signatureOf
     };
   }
 });
@@ -916,6 +949,8 @@ var require_brain = __commonJS({
       const pools = I18N.poolsFor(loc);
       const intro = `This is ${agentName} from ${company}.`;
       const g = (s) => ({ group: s, used, agentName, company, intro });
+      const missLog = [];
+      const friendlyLog = [];
       function fill(template) {
         return String(template).replace(/\{agent\}/g, agentName).replace(/\{company\}/g, company);
       }
@@ -928,7 +963,54 @@ var require_brain = __commonJS({
         agentName,
         learning,
         used,
+        usedFriendly: friendlyLog,
+        missed: missLog,
         strategyManifest: STRATEGY_INFO,
+        /**
+         * True when the caller asked us something instead of answering (Question
+         * Detection): these get a warm real answer, then a steer back.
+         */
+        isQuestion(text) {
+          const re = I18N.QUESTION_BY_LOCALE[loc] || I18N.QUESTION_BY_LOCALE.en;
+          return re.test(String(text || ""));
+        },
+        /**
+         * Warm, personalized answer to an unexpected question: acknowledges it,
+         * names the product, then offers to keep going. Never parrots the script.
+         */
+        answerQuestion(text) {
+          const seed = Array.from(String(text || "")).reduce((s, ch) => s + ch.charCodeAt(0), 0);
+          return I18N.pick(
+            [
+              `That's a fair question, and here's the honest answer: we keep owner-operators loaded back-to-back with ${product}. I know that's the part that actually matters. Want me to tell you how it works in thirty seconds?`,
+              `Good question - straight answer: this is about ${product}, and I'd rather you hear the real deal than a rehearsed pitch. Give me thirty seconds, then it's your call.`,
+              `I like that you asked. Plain answer: we're about ${product} - no fluff, no bait. Can I show you how that works for you specifically, real quick?`
+            ],
+            seed + 1
+          );
+        },
+        /**
+         * Friendly handling for anything off-script that isn't an objection and
+         * isn't a question either (small talk, odd comments, half-answers). Uses
+         * the custom intent learned from past calls when one matches; otherwise a
+         * warm pool line. Records the miss so it can be learned next time.
+         */
+        friendlyFor(text) {
+          const sig = I18N.signatureOf(text);
+          const t = String(text || "").toLowerCase();
+          const custom = (learning.customIntent || {})[sig];
+          if (custom && custom.used >= 1) {
+            used.push("ai_custom_intent");
+            friendlyLog.push(sig);
+            return custom.answer;
+          }
+          if (t && t.length < 4 && /\b(yep|ok|okay|sure|alright|fine)\b/.test(t)) return null;
+          if (!sig) return null;
+          const seed = Array.from(t).reduce((s, ch) => s + ch.charCodeAt(0), 0);
+          missLog.push({ sig, text: String(text).slice(0, 120), at: Date.now() });
+          friendlyLog.push(sig);
+          return I18N.pick(I18N.FRIENDLY_BY_LOCALE[loc] || I18N.FRIENDLY_BY_LOCALE.en, seed);
+        },
         opening(seed) {
           const s = pickStrategy("opening", scoreMap, pools, seed);
           if (s) used.push(s.key);
@@ -1007,7 +1089,7 @@ var require_brain = __commonJS({
             const line = `${loc === "en" ? "Perfect" + who + ". " : who ? "Perfecto" + who + ". " : "Perfecto. "}${fill(pick(s.pool, 11))} ${fill(pick(w.pool, 3))}`;
             return line;
           }
-          const bye = loc === "en" ? "Thanks for your time today - if anything changes, you know where to find us. Take care!" : loc === "es" ? "Gracias por su tiempo hoy - si algo cambia, ya sabe d\xF3nde encontrarnos. \xA1Cu\xEDdese!" : loc === "fr" ? "Merci pour votre temps - si \xE7a change, vous savez o\xF9 nous trouver. Prenez soin de vous !" : loc === "de" ? "Danke f\xFCr Ihre Zeit - wenn sich etwas \xE4ndert, wissen Sie, wo Sie uns finden. Passen Sie auf sich auf!" : loc === "pt" ? "Obrigado pelo seu tempo - se algo mudar, voc\xEA j\xE1 sabe onde nos encontrar. Se cuida!" : "\u0906\u092A\u0915\u0947 \u0938\u092E\u092F \u0915\u0947 \u0932\u093F\u090F \u0927\u0928\u094D\u092F\u0935\u093E\u0926 - \u0905\u0917\u0930 \u0915\u0941\u091B \u092C\u0926\u0932\u0924\u093E \u0939\u0948, \u0924\u094B \u0906\u092A \u091C\u093E\u0928\u0924\u0947 \u0939\u0948\u0902 \u0915\u093F \u0939\u092E\u0947\u0902 \u0915\u0939\u093E\u0901 \u092A\u093E\u0928\u093E \u0939\u0948\u0964 \u0927\u094D\u092F\u093E\u0928 \u0930\u0916\u093F\u090F!";
+          const bye = loc === "en" ? "Thanks for your time today - if anything changes, you know where to find us. Take care!" : loc === "es" ? "Gracias por su tiempo hoy - si algo cambia, ya sabe d\uFFFDnde encontrarnos. \uFFFDCu\uFFFDdese!" : loc === "fr" ? "Merci pour votre temps - si \uFFFDa change, vous savez o\uFFFD nous trouver. Prenez soin de vous !" : loc === "de" ? "Danke f\uFFFDr Ihre Zeit - wenn sich etwas \uFFFDndert, wissen Sie, wo Sie uns finden. Passen Sie auf sich auf!" : loc === "pt" ? "Obrigado pelo seu tempo - se algo mudar, voc\uFFFD j\uFFFD sabe onde nos encontrar. Se cuida!" : "???? ??? ?? ??? ??????? - ??? ??? ????? ??, ?? ?? ????? ??? ?? ???? ???? ???? ??? ????? ????!";
           return bye;
         }
       };
@@ -1068,14 +1150,43 @@ var require_brain = __commonJS({
       if (!goodLead && maxAttemptsOfRejection >= 2) return { escalate: true, reason: "AI exhausted options" };
       return { escalate: false, reason: "" };
     }
-    function learn(learning, { goodLead, strategies }) {
-      const scores = { ...learning.techniqueScores || {} };
-      scores.charm_flow = Math.round(Math.max(0, (scores.charm_flow || 0) + (goodLead ? 1 : -0.2)) * 100) / 100;
-      const ss = { ...learning.strategyScores || {} };
+    function learn(learning, { goodLead, strategies, missed, goodConversation, friendlyKeys }) {
+      const next = {
+        calls: (learning.calls || 0) + 1,
+        strategyScores: { ...learning.strategyScores || {} },
+        techniqueScores: { ...learning.techniqueScores || {} },
+        customIntent: { ...learning.customIntent || {} },
+        unhandled: Array.isArray(learning.unhandled) ? learning.unhandled.slice() : []
+      };
+      next.techniqueScores.charm_flow = Math.round(Math.max(0, (next.techniqueScores.charm_flow || 0) + (goodLead ? 1 : -0.2)) * 100) / 100;
       for (const k of strategies || []) {
-        ss[k] = Math.round(((ss[k] || 0) + (goodLead ? 1 : -0.15)) * 100) / 100;
+        next.strategyScores[k] = Math.round(((next.strategyScores[k] || 0) + (goodLead ? 1 : -0.15)) * 100) / 100;
       }
-      return { ...learning, techniqueScores: scores, strategyScores: ss, calls: (learning.calls || 0) + 1 };
+      for (const m of missed || []) {
+        const keep = next.unhandled.filter((u) => Date.now() - u.at < 1e3 * 60 * 60 * 24 * 7);
+        const seen = keep.filter((u) => u.sig === m.sig).length;
+        keep.push(m);
+        next.unhandled = keep;
+        if (seen >= 1) {
+          const ci = next.customIntent[m.sig] || { answer: I18N.pick(I18N.FRIENDLY_BY_LOCALE.en, m.sig.length + 3), good: 0, used: 0 };
+          ci.used += 0;
+          ci.good += goodConversation ? 1 : 0;
+          next.customIntent[m.sig] = ci;
+        } else if (next.customIntent[m.sig]) {
+          const ci = next.customIntent[m.sig];
+          ci.used += goodConversation ? 1 : 0;
+          ci.good += goodConversation && goodLead ? 1 : 0;
+          next.customIntent[m.sig] = ci;
+        }
+      }
+      for (const sig of new Set(friendlyKeys || [])) {
+        const ci = next.customIntent[sig];
+        if (!ci) continue;
+        ci.used += 1;
+        ci.good += goodConversation ? 1 : 0;
+        if (ci.used >= 3 && ci.good / ci.used < 0.4) delete next.customIntent[sig];
+      }
+      return next;
     }
     function topStrategy2(learning) {
       const ss = learning && learning.strategyScores || {};
@@ -2072,10 +2183,14 @@ var require_call_runner = __commonJS({
         transcript.push({ role: "agent", text });
         return speak(text);
       };
-      const lead = (text) => transcript.push({ role: "lead", text });
+      const lead = (text) => {
+        if (!String(text).startsWith("(silence)")) heardSomething = true;
+        transcript.push({ role: "lead", text });
+      };
       const finish = (verdict2) => {
         const allLeadWords = transcript.filter((t) => t.role === "lead").map((t) => t.text).filter((t) => !t.startsWith("(silence)")).join(" ");
         const esc2 = shouldEscalate({ goodLead: verdict2.goodLead, maxAttemptsOfRejection: verdict2.maxAttemptsOfRejection, hearsHumanRequest: allLeadWords, locale: loc });
+        const goodConversation = verdict2.goodLead || heardSomething === true || transcript.filter((t) => t.role === "lead" && !t.text.startsWith("(silence)")).length >= 2;
         return {
           product,
           company: brain.company,
@@ -2085,7 +2200,7 @@ var require_call_runner = __commonJS({
           goodLead: verdict2.goodLead,
           escalateToHuman: esc2.escalate,
           escalateReason: esc2.reason,
-          learning: learn(learning || {}, { goodLead: verdict2.goodLead, strategies: brain.used }),
+          learning: learn(learning || {}, { goodLead: verdict2.goodLead, strategies: brain.used, missed: brain.missed, goodConversation, friendlyKeys: brain.usedFriendly }),
           strategies: Array.from(new Set(brain.used)),
           summary: summarize(transcript, verdict2.goodLead, product),
           contactEmail: contactEmail || null
@@ -2093,6 +2208,7 @@ var require_call_runner = __commonJS({
       };
       let rejectionCount = 0;
       let leadName = null;
+      let heardSomething = false;
       const captureName = (answer) => {
         const t = String(answer || "").toLowerCase();
         const m = t.match(NAME_BORN);
@@ -2139,6 +2255,18 @@ var require_call_runner = __commonJS({
           lead("(silence)");
           await agent(brain.pivotGraceful());
           return finish(scoreLead({ transcript, fields: leadFields, locale: loc }));
+        }
+      }
+      const answeredDirectly = captureName(reply) !== null || /\b(yes|yeah|yep|ok|okay|sure|alright|fine|good|perfect|thanks|thank you|sounds good|that works|cool|right)\b/i.test(String(reply || "")) && String(reply || "").length < 24;
+      if (!isNegative(reply) && !answeredDirectly && !isSoft(reply) && (brain.isQuestion(reply) || String(reply || "").length >= 6)) {
+        const line = brain.isQuestion(reply) ? brain.answerQuestion(reply) : brain.friendlyFor(reply);
+        if (line) {
+          await agent(line);
+          const thenReply = await listenForLead();
+          if (thenReply && !thenReply.startsWith("(silence)")) {
+            lead(thenReply);
+            reply = thenReply;
+          } else lead("(silence)");
         }
       }
       const wasSoft = !isNegative(reply) && isSoft(reply);
@@ -2416,6 +2544,22 @@ function applyPortalConfig(config, portalCfg, cfgPath) {
   if (typeof portalCfg.searchEnabled === "boolean") set("searchEnabled", portalCfg.searchEnabled);
   if (typeof portalCfg.lang === "string" && /^(en|es|fr|de|pt|hi|auto)$/.test(portalCfg.lang.trim())) set("lang", portalCfg.lang.trim());
   if (typeof portalCfg.voiceStyle === "string" && /^(human|frank|friendly)$/.test(portalCfg.voiceStyle.trim())) set("voiceStyle", portalCfg.voiceStyle.trim());
+  if (portalCfg.voip && typeof portalCfg.voip === "object" && portalCfg.voip.number && portalCfg.voip.username) {
+    const next = {
+      provider: portalCfg.voip.provider || config.voip.provider || "ringcentral",
+      number: portalCfg.voip.number,
+      extension: portalCfg.voip.extension || "",
+      username: portalCfg.voip.username,
+      sipPassword: portalCfg.voip.sipPassword || "",
+      server: portalCfg.voip.server || config.voip.server || "sip.ringcentral.com",
+      ready: true
+    };
+    if (JSON.stringify(next) !== JSON.stringify(config.voip)) {
+      config.voip = next;
+      changed = true;
+      pushActivity(config, `VOIP line applied (${next.provider}, ${next.number}) - outbound calls use it.`);
+    }
+  }
   if (changed) {
     saveConfig(config, cfgPath);
     pushActivity(config, "Admin updated the sales form from the portal - applied.");
