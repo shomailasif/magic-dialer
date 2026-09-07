@@ -1,4 +1,4 @@
-﻿/**
+/**
  * AI sales conversation brain - "charm engine", prepped from current market
  * research (Gong Labs 300M-call data, CallHippo 72k calls, Sandler, RAIN Group,
  * ATRI/ATBS/OOIDA freight data, Cialdini).
@@ -87,6 +87,11 @@ function makeBrain({ product, leadFields, persona = "high-energy friendly female
   const intro = `This is ${agentName} from ${company}.`;
   const g = (s) => ({ group: s, used, agentName, company, intro });
 
+  // Boot-local log of what caught the agent off guard this call. It feeds the
+  // persistent learning store via learn(), never the other way around.
+  const missLog = [];
+  const friendlyLog = [];
+
   function fill(template) {
     return String(template)
       .replace(/\{agent\}/g, agentName)
@@ -102,7 +107,57 @@ function makeBrain({ product, leadFields, persona = "high-energy friendly female
     agentName,
     learning,
     used,
+    usedFriendly: friendlyLog,
+    missed: missLog,
     strategyManifest: STRATEGY_INFO,
+
+    /**
+     * True when the caller asked us something instead of answering (Question
+     * Detection): these get a warm real answer, then a steer back.
+     */
+    isQuestion(text) {
+      const re = I18N.QUESTION_BY_LOCALE[loc] || I18N.QUESTION_BY_LOCALE.en;
+      return re.test(String(text || ""));
+    },
+
+    /**
+     * Warm, personalized answer to an unexpected question: acknowledges it,
+     * names the product, then offers to keep going. Never parrots the script.
+     */
+    answerQuestion(text) {
+      const seed = Array.from(String(text || "")).reduce((s, ch) => s + ch.charCodeAt(0), 0);
+      return I18N.pick(
+        [
+          `That's a fair question, and here's the honest answer: we keep owner-operators loaded back-to-back with ${product}. I know that's the part that actually matters. Want me to tell you how it works in thirty seconds?`,
+          `Good question - straight answer: this is about ${product}, and I'd rather you hear the real deal than a rehearsed pitch. Give me thirty seconds, then it's your call.`,
+          `I like that you asked. Plain answer: we're about ${product} - no fluff, no bait. Can I show you how that works for you specifically, real quick?`,
+        ],
+        seed + 1,
+      );
+    },
+
+    /**
+     * Friendly handling for anything off-script that isn't an objection and
+     * isn't a question either (small talk, odd comments, half-answers). Uses
+     * the custom intent learned from past calls when one matches; otherwise a
+     * warm pool line. Records the miss so it can be learned next time.
+     */
+    friendlyFor(text) {
+      const sig = I18N.signatureOf(text);
+      const t = String(text || "").toLowerCase();
+      const custom = (learning.customIntent || {})[sig];
+      if (custom && custom.used >= 1) {
+        used.push("ai_custom_intent");
+        friendlyLog.push(sig);
+        return custom.answer;
+      }
+      if (t && t.length < 4 && /\b(yep|ok|okay|sure|alright|fine)\b/.test(t)) return null;
+      if (!sig) return null;
+      const seed = Array.from(t).reduce((s, ch) => s + ch.charCodeAt(0), 0);
+      missLog.push({ sig, text: String(text).slice(0, 120), at: Date.now() });
+      friendlyLog.push(sig);
+      return I18N.pick(I18N.FRIENDLY_BY_LOCALE[loc] || I18N.FRIENDLY_BY_LOCALE.en, seed);
+    },
 
     opening(seed) {
       const s = pickStrategy("opening", scoreMap, pools, seed);
@@ -196,11 +251,11 @@ function makeBrain({ product, leadFields, persona = "high-energy friendly female
       }
       const bye = loc === "en"
         ? "Thanks for your time today - if anything changes, you know where to find us. Take care!"
-        : loc === "es" ? "Gracias por su tiempo hoy - si algo cambia, ya sabe dónde encontrarnos. ¡Cuídese!"
-          : loc === "fr" ? "Merci pour votre temps - si ça change, vous savez où nous trouver. Prenez soin de vous !"
-            : loc === "de" ? "Danke für Ihre Zeit - wenn sich etwas ändert, wissen Sie, wo Sie uns finden. Passen Sie auf sich auf!"
-              : loc === "pt" ? "Obrigado pelo seu tempo - se algo mudar, você já sabe onde nos encontrar. Se cuida!"
-                : "आपके समय के लिए धन्यवाद - अगर कुछ बदलता है, तो आप जानते हैं कि हमें कहाँ पाना है। ध्यान रखिए!";
+        : loc === "es" ? "Gracias por su tiempo hoy - si algo cambia, ya sabe d�nde encontrarnos. �Cu�dese!"
+          : loc === "fr" ? "Merci pour votre temps - si �a change, vous savez o� nous trouver. Prenez soin de vous !"
+            : loc === "de" ? "Danke f�r Ihre Zeit - wenn sich etwas �ndert, wissen Sie, wo Sie uns finden. Passen Sie auf sich auf!"
+              : loc === "pt" ? "Obrigado pelo seu tempo - se algo mudar, voc� j� sabe onde nos encontrar. Se cuida!"
+                : "???? ??? ?? ??? ??????? - ??? ??? ????? ??, ?? ?? ????? ??? ?? ???? ???? ???? ??? ????? ????!";
       return bye;
     },
   };
@@ -286,17 +341,55 @@ function shouldEscalate({ goodLead, maxAttemptsOfRejection, hearsHumanRequest, l
 }
 
 /**
- * AI "learning": boost strategies that kept a call on track or qualified it.
- * `strategies` lists the technique keys used during the call.
+ * AI "learning" from every call:
+ *   - strategyScores / techniqueScores: reward phrasing that kept calls going.
+ *   - unhandled: every off-script line is remembered so recurrences (people
+ *     asking the same thing call after call) are auto-promoted into custom
+ *     intents with their own friendly answer.
+ *   - customIntent[key].good/used: success-weighted; the answer is kept only
+ *     while it helps (a good call bumps good; missed follow-ups let it decay).
+ * Result is persisted into config, so improvement is cumulative across calls.
  */
-function learn(learning, { goodLead, strategies }) {
-  const scores = { ...(learning.techniqueScores || {}) };
-  scores.charm_flow = Math.round((Math.max(0, (scores.charm_flow || 0) + (goodLead ? 1 : -0.2))) * 100) / 100;
-  const ss = { ...(learning.strategyScores || {}) };
+function learn(learning, { goodLead, strategies, missed, goodConversation, friendlyKeys }) {
+  const next = {
+    calls: (learning.calls || 0) + 1,
+    strategyScores: { ...(learning.strategyScores || {}) },
+    techniqueScores: { ...(learning.techniqueScores || {}) },
+    customIntent: { ...(learning.customIntent || {}) },
+    unhandled: Array.isArray(learning.unhandled) ? learning.unhandled.slice() : [],
+  };
+  next.techniqueScores.charm_flow = Math.round((Math.max(0, (next.techniqueScores.charm_flow || 0) + (goodLead ? 1 : -0.2))) * 100) / 100;
   for (const k of strategies || []) {
-    ss[k] = Math.round(((ss[k] || 0) + (goodLead ? 1 : -0.15)) * 100) / 100;
+    next.strategyScores[k] = Math.round(((next.strategyScores[k] || 0) + (goodLead ? 1 : -0.15)) * 100) / 100;
   }
-  return { ...learning, techniqueScores: scores, strategyScores: ss, calls: (learning.calls || 0) + 1 };
+  // Remember what caught us off guard, so practice makes permanent.
+  for (const m of missed || []) {
+    const keep = next.unhandled.filter((u) => Date.now() - u.at < 1000 * 60 * 60 * 24 * 7); // 7-day window
+    const seen = keep.filter((u) => u.sig === m.sig).length;
+    keep.push(m);
+    next.unhandled = keep;
+    if (seen >= 1) {
+      // Recurring across calls -> promote to a learned intent with a warm answer.
+      const ci = next.customIntent[m.sig] || { answer: I18N.pick(I18N.FRIENDLY_BY_LOCALE.en, m.sig.length + 3), good: 0, used: 0 };
+      ci.used += 0;
+      ci.good += goodConversation ? 1 : 0;
+      next.customIntent[m.sig] = ci;
+    } else if (next.customIntent[m.sig]) {
+      const ci = next.customIntent[m.sig];
+      ci.used += goodConversation ? 1 : 0;
+      ci.good += goodConversation && goodLead ? 1 : 0;
+      next.customIntent[m.sig] = ci;
+    }
+  }
+  // Success-weight any friendly/custom lines actually used this call.
+  for (const sig of new Set(friendlyKeys || [])) {
+    const ci = next.customIntent[sig];
+    if (!ci) continue;
+    ci.used += 1;
+    ci.good += goodConversation ? 1 : 0;
+    if (ci.used >= 3 && ci.good / ci.used < 0.4) delete next.customIntent[sig]; // retiring a dud answer
+  }
+  return next;
 }
 
 /** The currently best-performing strategy (for cockpit/portal preparedness). */

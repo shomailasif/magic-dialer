@@ -858,6 +858,55 @@ function retryFor(locale, field) {
 
 function pick(arr, seed) { return arr[Math.abs(seed) % arr.length]; }
 
+/**
+ * Friendly, warm lines for when the person on the other end says something
+ * off-script (small talk, odd questions, anything unplanned). The agent uses
+ * these instead of a robotic "back to the pitch"; they keep the conversation
+ * human, then gently steer back.
+ */
+const FRIENDLY_BY_LOCALE = {
+  en: [
+    "Ha, fair enough - I love a conversation that stays interesting. Quick answer for you, then back to business.",
+    "You know what, that's a good question and you deserve a straight one. Here's the honest version, then let me loop back to the reason I called.",
+    "Honestly? I'm the type who actually likes hearing that. Let me give you a real answer and then one quick question back.",
+    "I appreciate you talking to me like a person - that's rare on these calls. Straight answer coming up.",
+    "Totally fair play. Let me answer that in plain English, then I've got a thirty-second thing for you.",
+  ],
+  es: ["Buena pregunta - te la respondo con franqueza y volvemos al grano."],
+  fr: ["Bonne question - je r\u00e9ponds franchement, puis on reprend le fil."],
+  de: ["Berechtigte Frage - ich antworte offen und wir kommen schnell zur Sache."],
+  pt: ["Boa pergunta - respondo com franqueza e voltamos ao assunto."],
+  hi: ["Achha sawal hai - seedha jawaab deta hoon, phir ek chhota sa sawal."],
+};
+
+/** Words that mark the start of an unexpected question the caller asks the agent. */
+const QUESTION_BY_LOCALE = {
+  en: /\b(how|what|why|when|who|where|which|can you|could you|will you|do you|are you|is it|are there)\b/i,
+  es: /\b(c\u00f3mo|qu\u00e9|por qu\u00e9|cu\u00e1ndo|qui\u00e9n|d\u00f3nde|puedes|puede)\b/i,
+  fr: /\b(comment|quoi|pourquoi|quand|qui|o\u00f9|pouvez|peux)\b/i,
+  de: /\b(warum|was|wie|wann|wer|wo|k\u00f6nnen|kannst)\b/i,
+  pt: /\b(como|o que|por que|quando|quem|onde|pode|voc\u00ea)\b/i,
+  hi: /\b(kya|kaise|kyun|kab|kaun|kahan|aap)\b/i,
+};
+
+const STOP_WORDS = new Set(
+  ["the","a","an","to","of","on","in","for","and","or","with","about","my","i","you","it","me","is","are","be","have","has","will","would","can","do","we","they","this","that","but","so","because","not","just","only"],
+);
+
+/**
+ * A small, stable signature of what a caller said so the agent can spot a
+ * recurring question/comment across different calls and learn to answer it.
+ */
+function signatureOf(text) {
+  const words = String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+  const uniq = Array.from(new Set(words)).slice(0, 2);
+  return uniq.join(" ");
+}
+
 module.exports = {
   normalizeLocale,
   detectLanguage,
@@ -881,4 +930,7 @@ module.exports = {
   CALLBACK_CLOSE_BY_LOCALE,
   POOLS_BY_LOCALE,
   SUPPORTED_LOCALES: Object.keys(POOLS_BY_LOCALE),
+  FRIENDLY_BY_LOCALE,
+  QUESTION_BY_LOCALE,
+  signatureOf,
 };

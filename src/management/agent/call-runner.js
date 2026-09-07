@@ -62,15 +62,19 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     transcript.push({ role: "agent", text });
     return speak(text);
   };
-  const lead = (text) => transcript.push({ role: "lead", text });
+  const lead = (text) => {
+    if (!String(text).startsWith("(silence)")) heardSomething = true;
+    transcript.push({ role: "lead", text });
+  };
 
-  const finish = (verdict) => {
+const finish = (verdict) => {
     const allLeadWords = transcript
       .filter((t) => t.role === "lead")
       .map((t) => t.text)
       .filter((t) => !t.startsWith("(silence)"))
       .join(" ");
     const esc = shouldEscalate({ goodLead: verdict.goodLead, maxAttemptsOfRejection: verdict.maxAttemptsOfRejection, hearsHumanRequest: allLeadWords, locale: loc });
+    const goodConversation = verdict.goodLead || heardSomething === true || transcript.filter((t) => t.role === "lead" && !t.text.startsWith("(silence)")).length >= 2;
     return {
       product,
       company: brain.company,
@@ -80,7 +84,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       goodLead: verdict.goodLead,
       escalateToHuman: esc.escalate,
       escalateReason: esc.reason,
-      learning: learn(learning || {}, { goodLead: verdict.goodLead, strategies: brain.used }),
+      learning: learn(learning || {}, { goodLead: verdict.goodLead, strategies: brain.used, missed: brain.missed, goodConversation, friendlyKeys: brain.usedFriendly }),
       strategies: Array.from(new Set(brain.used)),
       summary: summarize(transcript, verdict.goodLead, product),
       contactEmail: contactEmail || null,
@@ -89,6 +93,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
   let rejectionCount = 0;
   let leadName = null;
+  let heardSomething = false;
 
   const captureName = (answer) => {
     const t = String(answer || "").toLowerCase();
@@ -143,6 +148,21 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       lead("(silence)");
       await agent(brain.pivotGraceful());
       return finish(scoreLead({ transcript, fields: leadFields, locale: loc }));
+    }
+  }
+
+  // 2a. The caller asks US something unexpected (question detection): answer
+  //     it warmly with a real product answer, then steer back to the pitch.
+  //     Answers that are already on-script (a name, a confirmation, a soft
+  //     need) are NEVER intercepted, so the flow never eats a real answer.
+  const answeredDirectly = captureName(reply) !== null || /\b(yes|yeah|yep|ok|okay|sure|alright|fine|good|perfect|thanks|thank you|sounds good|that works|cool|right)\b/i.test(String(reply || "")) && String(reply || "").length < 24;
+  if (!isNegative(reply) && !answeredDirectly && !isSoft(reply) && (brain.isQuestion(reply) || String(reply || "").length >= 6)) {
+    const line = brain.isQuestion(reply) ? brain.answerQuestion(reply) : brain.friendlyFor(reply);
+    if (line) {
+      await agent(line);
+      const thenReply = await listenForLead();
+      if (thenReply && !thenReply.startsWith("(silence)")) { lead(thenReply); reply = thenReply; }
+      else lead("(silence)");
     }
   }
 

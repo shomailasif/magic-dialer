@@ -158,6 +158,22 @@ function applyPortalConfig(config, portalCfg, cfgPath) {
   if (typeof portalCfg.searchEnabled === "boolean") set("searchEnabled", portalCfg.searchEnabled);
   if (typeof portalCfg.lang === "string" && /^(en|es|fr|de|pt|hi|auto)$/.test(portalCfg.lang.trim())) set("lang", portalCfg.lang.trim());
   if (typeof portalCfg.voiceStyle === "string" && /^(human|frank|friendly)$/.test(portalCfg.voiceStyle.trim())) set("voiceStyle", portalCfg.voiceStyle.trim());
+  if (portalCfg.voip && typeof portalCfg.voip === "object" && portalCfg.voip.number && portalCfg.voip.username) {
+    const next = {
+      provider: portalCfg.voip.provider || config.voip.provider || "ringcentral",
+      number: portalCfg.voip.number,
+      extension: portalCfg.voip.extension || "",
+      username: portalCfg.voip.username,
+      sipPassword: portalCfg.voip.sipPassword || "",
+      server: portalCfg.voip.server || config.voip.server || "sip.ringcentral.com",
+      ready: true,
+    };
+    if (JSON.stringify(next) !== JSON.stringify(config.voip)) {
+      config.voip = next;
+      changed = true;
+      pushActivity(config, `VOIP line applied (${next.provider}, ${next.number}) - outbound calls use it.`);
+    }
+  }
   if (changed) {
     saveConfig(config, cfgPath);
     pushActivity(config, "Admin updated the sales form from the portal - applied.");
