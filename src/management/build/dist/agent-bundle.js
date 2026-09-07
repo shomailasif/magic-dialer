@@ -2584,6 +2584,10 @@ async function runAgent(opts = {}) {
       log("Voice call failed: " + e.message);
       ui({ mode: "idle", line: "Voice call failed - retrying later." });
     }
+    if (opts.callOnce === true) {
+      log("Test call finished. Exiting (heartbeat stays with the main agent).");
+      return;
+    }
   }
   while (true) {
     try {
@@ -2613,15 +2617,16 @@ module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPor
 if (require.main === module) {
   const argv = process.argv.slice(2);
   const setup = argv.includes("--setup");
-  const call = argv.includes("--call");
-  const rest = argv.filter((a) => a !== "--setup" && a !== "--call");
+  const call = argv.includes("--call") || argv.includes("--call-once");
+  const callOnce = argv.includes("--call-once");
+  const rest = argv.filter((a) => a !== "--setup" && a !== "--call" && a !== "--call-once");
   if (argv.includes("--watchdog")) {
     runWatchdog(rest).catch((e) => {
       console.error(e);
       process.exit(1);
     });
   } else {
-    runAgent({ token: rest[0], portalUrl: rest[1], setup, call }).catch((e) => {
+    runAgent({ token: rest[0], portalUrl: rest[1], setup, call, callOnce }).catch((e) => {
       console.error(e);
       process.exit(1);
     });

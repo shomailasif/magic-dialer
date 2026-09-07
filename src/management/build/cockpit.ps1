@@ -205,9 +205,9 @@ $btnTest.Add_Click({
   $ticker.ForeColor = $cAmber
   $ticker.Text = "> Starting test call... listen out for the AI."
   if (Test-Path -LiteralPath $testRunner) {
-    try { Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File",$testRunner) } catch {}
+    try { Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$testRunner) } catch {}
   } elseif (Test-Path -LiteralPath $agentExe) {
-    try { Start-Process -FilePath $agentExe -ArgumentList @("--call") -WorkingDirectory $PSScriptRoot } catch {}
+    try { Start-Process -FilePath $agentExe -ArgumentList @("--call-once") -WorkingDirectory $PSScriptRoot } catch {}
   }
   Start-Sleep -Milliseconds 9000
   $testRunning = $false
