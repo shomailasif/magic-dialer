@@ -247,7 +247,8 @@ $ok.Add_Click({
   $form.Close()
   $agent = Join-Path $PSScriptRoot "MagicDialer.exe"
   if (Test-Path -LiteralPath $agent) {
-    Start-Process -FilePath $agent -WindowStyle Hidden -WorkingDirectory $PSScriptRoot
+    # Run under the self-healing watchdog so the agent always restarts if it dies.
+    Start-Process -FilePath $agent -ArgumentList @("--watchdog") -WindowStyle Hidden -WorkingDirectory $PSScriptRoot
   }
 })
 $cancel.Add_Click({ $form.Close() })

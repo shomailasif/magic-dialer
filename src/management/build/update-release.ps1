@@ -5,10 +5,8 @@ $repo = "shomailasif/magic-dialer"
 $tag = "v1.0"
 $setup = "C:\Users\USER\Documents\Default Project\autodial-ai\src\management\build\dist\MagicDialer-Setup.exe"
 
-# Read token from git credential cache without printing it.
-$input = "protocol=https`nhost=github.com`n`n"
-$cred = $input | git credential fill 2>$null
-$token = (($cred -split "`n" | Where-Object { $_ -like "password=*" }) -replace "password=", "")
+# Read token from the operator's local token file without printing it.
+$token = (Get-Content -Raw "$env:LOCALAPPDATA\Temp\opencode\gh-token.txt").Trim()
 
 $headers = @{ Authorization = "token $token"; Accept = "application/vnd.github+json" }
 

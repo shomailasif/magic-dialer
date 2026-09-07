@@ -43,6 +43,86 @@ function log(msg) {
   console.log(`[agent] ${new Date().toISOString()} ${msg}`);
 }
 
+/**
+ * Self-healing supervisor. Keeps the agent process alive around-the-clock:
+ * if it crashes or exits unexpectedly it is restarted immediately; if the
+ * admin disables it, the child exits after writing DISABLED status and the
+ * watchdog sees that marker and stops (no zombie restart loop). Crash-loops
+ * get a growing backoff so a broken build doesn't spin a CPU/disk storm.
+ *
+ * Launched by the installer/this exe as `MagicDialer.exe --watchdog`.
+ */
+const WATCHDOG_LOCK = path.join(os.homedir(), "AppData", "Local", "Magic Dialer", "watchdog.lock");
+const CRASH_WINDOW_MS = 45000;
+const CRASH_BEFORE_BACKOFF = 3;
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function takeWatchdogLock() {
+  try {
+    if (fs.existsSync(WATCHDOG_LOCK)) {
+      const old = Number(String(fs.readFileSync(WATCHDOG_LOCK, "utf8")).trim());
+      if (old && (process.platform === "win32" ? old !== process.pid && pidAlive(old) : pidAlive(old))) {
+        console.log(`[watchdog] another supervisor (pid ${old}) is already running — exiting.`);
+        return false;
+      }
+    }
+    fs.mkdirSync(path.dirname(WATCHDOG_LOCK), { recursive: true });
+    fs.writeFileSync(WATCHDOG_LOCK, String(process.pid));
+    return true;
+  } catch { return true; } // never block supervision over a lock file
+}
+
+async function runWatchdog(args) {
+  if (!takeWatchdogLock()) return;
+  const childArgs = args.filter((a) => a !== "--watchdog");
+  const childCmd = process.env.MD_WATCHDOG_CHILD ? { cmd: "cmd.exe", args: ["/d", "/c", process.env.MD_WATCHDOG_CHILD] } : { cmd: process.execPath, args: childArgs };
+  let crashes = 0;
+  let lastExit = 0;
+  const restart = (n) => new Promise((r) => setTimeout(r, n));
+
+  while (true) {
+    log(`watchdog starting agent (pid engine: ${childCmd.cmd})...`);
+    const child = spawn(childCmd.cmd, childCmd.args, { stdio: ["ignore", "inherit", "inherit"] });
+    const exited = await new Promise((resolve) => {
+      child.on("exit", (code) => resolve({ code, ranFor: Date.now() - (child._start || Date.now()) }));
+      child._start = Date.now();
+    });
+
+    const cfgDir = path.join(os.homedir(), "AppData", "Local", "Magic Dialer");
+    let disabled = false;
+    try {
+      const st = JSON.parse(fs.readFileSync(path.join(cfgDir, "status.json"), "utf8"));
+      disabled = st && (st.status === "DISABLED" || st.mode === "off");
+    } catch {}
+
+    if (disabled) {
+      log(`agent left status DISABLED — supervisor standing down.`);
+      return;
+    }
+
+    const wasCrash = exited.code !== 0 || exited.ranFor < CRASH_WINDOW_MS;
+    const crashy = wasCrash && Date.now() - lastExit < CRASH_WINDOW_MS;
+    crashes = (wasCrash && crashy) ? Math.min(crashes + 1, 10) : (wasCrash ? 1 : 0);
+    lastExit = Date.now();
+
+    if (wasCrash && crashes >= CRASH_BEFORE_BACKOFF) {
+      const backoff = Math.min(1000 * crashes, 300000);
+      log(`agent exited ${exited.code} after ${exited.ranFor}ms — crash streak ${crashes}, backing off ${backoff}ms.`);
+      await restart(backoff);
+    } else if (exited.ranFor >= CRASH_WINDOW_MS) {
+      log(`agent exited cleanly (code ${exited.code}) after ${exited.ranFor}ms — restarting in 4s.`);
+      await restart(4000);
+    } else {
+      crashes = wasCrash && crashy ? crashes + 1 : Math.max(0, crashes - 1);
+      log(`agent exited early (code ${exited.code}) — restarting in ${wasCrash ? 4000 : 2000}ms.`);
+      await restart(wasCrash ? 4000 : 2000);
+    }
+  }
+}
+
 /** Agent version surfaced in cockpit + status. */
 const VERSION = "1.1.0";
 
@@ -297,8 +377,12 @@ if (require.main === module) {
   const setup = argv.includes("--setup");
   const call = argv.includes("--call");
   const rest = argv.filter((a) => a !== "--setup" && a !== "--call");
-  runAgent({ token: rest[0], portalUrl: rest[1], setup, call }).catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  if (argv.includes("--watchdog")) {
+    runWatchdog(rest).catch((e) => { console.error(e); process.exit(1); });
+  } else {
+    runAgent({ token: rest[0], portalUrl: rest[1], setup, call }).catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+  }
 }
