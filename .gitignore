@@ -36,6 +36,7 @@
 *.sqlite
 build/dist/*.exe
 /src/management/outbox/
+/src/management/outbox-portal-*/
 src/management/_dbg.js
 /deploy
 
