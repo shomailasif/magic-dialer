@@ -577,6 +577,48 @@ function Show-ManageForm {
   $f2.Controls.Add($btnCancel)
   $btnCancel.Add_Click({ $f2.Close() })
 
+  $btnCall = New-Object System.Windows.Forms.Button
+  $btnCall.Text = "CALL NUMBERS NOW"
+  $btnCall.Location = New-Object System.Drawing.Point(254, 530)
+  $btnCall.Size = New-Object System.Drawing.Size(242, 44)
+  $btnCall.BackColor = $cPanel2; $btnCall.ForeColor = $cViolet
+  $btnCall.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+  $btnCall.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+  $f2.Controls.Add($btnCall)
+
+  $btnCall.Add_Click({
+    $nums = @($tNums.Text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    if ($nums.Count -eq 0) { $lblMg.ForeColor = $cRed; $lblMg.Text = "No numbers yet. Type the numbers above, then click CALL NUMBERS NOW."; return }
+    $lblMg.ForeColor = $cAmber; $lblMg.Text = "Logging in as this agent..."; [System.Windows.Forms.Application]::DoEvents()
+    try {
+      $cc = New-Object System.Net.CookieContainer
+      $loginJson = @{ token = $token } | ConvertTo-Json -Compress
+      $null = Post-JsonBody ($portal + "/clogin") $loginJson $cc
+      $placed = 0; $ringing = 0
+      foreach ($rawNum in $nums) {
+        $d = ($rawNum -replace '\D', "")
+        if ($d.Length -lt 10) { $lblMg.ForeColor = $cRed; $lblMg.Text = "'$rawNum' looks incomplete - skipped."; [System.Windows.Forms.Application]::DoEvents(); continue }
+        if ($d.Length -eq 10) { $d = "1" + $d }
+        $e164 = "+" + $d
+        $lblMg.ForeColor = $cCyan; $lblMg.Text = "Calling $e164 ..."; [System.Windows.Forms.Application]::DoEvents()
+        try {
+          $dialJson = @{ token = $token; number = $e164 } | ConvertTo-Json -Compress
+          $resp = Post-JsonBody ($portal + "/api/dial") $dialJson $cc
+          $j = $resp | ConvertFrom-Json
+          if ($j.ok) { $placed++; if ($j.status -eq "ringing") { $ringing++ }; $lblMg.ForeColor = $cGreen; $lblMg.Text = "$e164 -> $($j.status)." }
+          else { $lblMg.ForeColor = $cRed; $lblMg.Text = "$e164 failed: $($j.error)" }
+        } catch {
+          $lblMg.ForeColor = $cRed; $lblMg.Text = "$e164 error: $($_.Exception.Message)"
+        }
+        [System.Windows.Forms.Application]::DoEvents()
+        if ($placed -lt $nums.Count) { Start-Sleep -Seconds 2; [System.Windows.Forms.Application]::DoEvents() }
+      }
+      if ($placed -gt 0) { $lblMg.ForeColor = $cGreen; $lblMg.Text = "Done - $placed call(s) placed ($ringing ringing)." } else { $lblMg.ForeColor = $cRed; $lblMg.Text = "No calls could be placed." }
+    } catch {
+      $lblMg.ForeColor = $cRed; $lblMg.Text = "Login/dial failed: " + $_.Exception.Message
+    }
+  })
+
   $btnSave.Add_Click({
     $lblMg.ForeColor = $cAmber; $lblMg.Text = "Saving... please wait"
     $cc = New-Object System.Net.CookieContainer
