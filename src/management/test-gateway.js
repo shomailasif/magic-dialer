@@ -135,6 +135,25 @@ async function customer(pathname, opts = {}) {
   }
   check("ringcentral: fake fetch path completes as ringing with provider ref", outboundRc.status === "ringing" && outboundRc.providerRef === "rc-sess-1");
 
+  // RingCentral driver JWT path (console-generated personal JWT credential).
+  const rcreqJwt = [];
+  const rcCtxJwt = {
+    portalId: "main",
+    env: { RC_CLIENT_ID: "app123", RC_CLIENT_SECRET: "secret456", RC_JWT: "rc-jwt-assertion-token" },
+    fetch: async (url, opts) => {
+      rcreqJwt.push({ url, headers: opts.headers, body: opts.body });
+      if (url.indexOf("/oauth/token") >= 0) return { ok: true, status: 200, json: async () => ({ access_token: "tok-jwt" }) };
+      return { ok: true, status: 200, json: async () => ({ session: { id: "rc-jwt-sess-1" } }) };
+    },
+  };
+  const outboundRcJwt = await trunk.placeCall(rcCtxJwt, { customer: rcCust.customer, destination: "+1 555 0100" });
+  const jwtReq = rcreqJwt.find((r) => r.url.indexOf("/oauth/token") >= 0);
+  check("ringcentral JWT: token request targets the JWT bearer endpoint", !!jwtReq && jwtReq.url.indexOf("restapi/oauth/token") >= 0 && jwtReq.url.indexOf("v1.0") < 0);
+  check("ringcentral JWT: grant_type is the JWT-bearer URN", !!jwtReq && jwtReq.body.indexOf("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer") >= 0);
+  check("ringcentral JWT: assertion credential from env posted", !!jwtReq && jwtReq.body.indexOf("assertion=rc-jwt-assertion-token") >= 0);
+  check("ringcentral JWT: Basic auth still from client id/secret", !!jwtReq && jwtReq.headers.Authorization.indexOf("Basic") === 0);
+  check("ringcentral JWT: completes as ringing over 443", outboundRcJwt.status === "ringing" && outboundRcJwt.providerRef === "rc-jwt-sess-1");
+
   // RingCentral driver surfaces a rejected token cleanly (injected fetch).
   const rcreq2 = [];
   const rcCtx2 = {
