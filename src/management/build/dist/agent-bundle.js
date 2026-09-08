@@ -2430,7 +2430,7 @@ var path = require("node:path");
 var fs = require("node:fs");
 var os = require("node:os");
 var crypto = require("node:crypto");
-var { spawn } = require("node:child_process");
+var { spawn, execSync } = require("node:child_process");
 var { HEARTBEAT_INTERVAL_MS } = require_protocol();
 var { setUi } = require_ui();
 var { topStrategy } = require_brain();
@@ -2531,7 +2531,7 @@ async function runWatchdog(args) {
     }
   }
 }
-var VERSION = "1.1.0";
+var VERSION = "1.1.2";
 function applyPortalConfig(config, portalCfg, cfgPath) {
   if (!portalCfg || typeof portalCfg !== "object") return false;
   let changed = false;
@@ -2623,23 +2623,58 @@ function post(url, body) {
     body: JSON.stringify(body)
   }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
 }
-function showCockpit(configDir) {
+function tryCockpit(configDir) {
   const isPacked = path.basename(process.execPath).toLowerCase().includes("magicdialer");
   if (!isPacked) return;
   if (process.env.MAGICDIALER_NO_COCKPIT === "1") return;
-  try {
-    spawn("powershell.exe", [
-      "-NoProfile",
-      "-WindowStyle",
-      "Hidden",
-      "-Command",
-      `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class HC{[DllImport("kernel32.dll")]public static extern IntPtr GetConsoleWindow();[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int c);}';[HC]::ShowWindow([HC]::GetConsoleWindow(),0)`
-    ], { stdio: "ignore" });
-    const cockpit = path.join(path.dirname(process.execPath), "cockpit.ps1");
-    if (fs.existsSync(cockpit)) {
-      spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", cockpit], { stdio: "ignore" });
+  const cockpit = path.join(path.dirname(process.execPath), "cockpit.ps1");
+  if (fs.existsSync(cockpit)) {
+    try {
+      spawn("powershell.exe", [
+        "-NoProfile",
+        "-Sta",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-File",
+        cockpit
+      ], { stdio: "ignore" });
+    } catch {
     }
+  }
+}
+var AGENT_LOCK = path.join(os.homedir(), "AppData", "Local", "Magic Dialer", "agent.lock");
+function pidIsMagicDialer(pid) {
+  try {
+    const out = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true
+    });
+    return /magicdialer\.exe/i.test(out);
   } catch {
+    return false;
+  }
+}
+function takeAgentLock() {
+  if (!path.basename(process.execPath).toLowerCase().includes("magicdialer")) return true;
+  try {
+    if (fs.existsSync(AGENT_LOCK)) {
+      const old = Number(String(fs.readFileSync(AGENT_LOCK, "utf8")).trim());
+      if (old && pidAlive(old) && pidIsMagicDialer(old)) return false;
+    }
+    fs.mkdirSync(path.dirname(AGENT_LOCK), { recursive: true });
+    fs.writeFileSync(AGENT_LOCK, String(process.pid));
+    process.on("exit", () => {
+      try {
+        fs.unlinkSync(AGENT_LOCK);
+      } catch {
+      }
+    });
+    return true;
+  } catch {
+    return true;
   }
 }
 var { createInterface } = require("node:readline");
@@ -2653,6 +2688,31 @@ function ask(question) {
   });
 }
 async function runAgent(opts = {}) {
+  function bringDashboardFront() {
+    const ps = [
+      "Add-Type -AssemblyName Microsoft.VisualBasic;",
+      "$w = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Magic Dialer*' } | Select-Object -First 1;",
+      "if ($w) { [Microsoft.VisualBasic.Interaction]::AppActivate($w.Id) } else { $null }"
+    ].join(" ");
+    try {
+      execSync(`powershell -NoProfile -Command "& { ${ps} }"`, {
+        windowsHide: true,
+        stdio: "ignore"
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (!takeAgentLock()) {
+    log("Magic Dialer is already running - focusing its dashboard...");
+    const focused = bringDashboardFront();
+    if (!focused) {
+      tryCockpit(path.dirname(defaultConfigPath()));
+    }
+    setTimeout(() => process.exit(0), 1500);
+    return;
+  }
   const cfgPath = opts.configPath || defaultConfigPath();
   let config = loadConfig(cfgPath);
   if (!config || !config.token) {
@@ -2693,7 +2753,7 @@ async function runAgent(opts = {}) {
     log("calls through this PC's microphone + speakers (a full phone line needs a provider).");
   }
   const configDir = path.dirname(cfgPath);
-  showCockpit(configDir);
+  tryCockpit(configDir);
   const productLabel = config.product || "Magic Dialer customer";
   const ui = (patch) => setUi(configDir, {
     version: VERSION,
@@ -2709,6 +2769,14 @@ async function runAgent(opts = {}) {
   });
   ui({ status: "STARTING", mode: "idle", line: "Starting Magic Dialer agent..." });
   const portal = config.portalUrl.replace(/\/+$/, "");
+  log("");
+  log("============================================================");
+  log("            MAGIC DIALER  v" + VERSION + "  -  RUNNING");
+  log("  Customer : " + (config.companyName || config.product || productLabel));
+  log("  Portal   : " + portal);
+  log("  Status   : waiting for heartbeat  (leave this window open)");
+  log("============================================================");
+  log("");
   if (opts.call === true) {
     const { voiceCall } = require_call();
     try {
