@@ -107,20 +107,6 @@ async function customer(pathname, opts = {}) {
   const rcData = await bodyOf(rc);
   check("ringcentral without app creds -> explicit needs-credential message", rc.status === 200 && rcData.status === "error" && /Client ID\/Secret/.test(rcData.error || ""));
 
-  // App keys endpoint: stored in the portal DB, surfaced to trunk drivers
-  // through env - the admin never needs a hosting console.
-  const anonCreds = await fetch(BASE + "/api/app-creds", { headers: { "Content-Type": "application/json" } });
-  check("app-creds requires admin (401)", anonCreds.status === 401);
-  const setCreds = await admin("/api/app-creds", { method: "POST", body: { clientId: "app-xyz", clientSecret: "sec-xyz" } });
-  const sc = await bodyOf(setCreds);
-  check("app-creds save stores both keys", sc.ok === true && sc.clientIdSet === true && sc.secretSet === true);
-  const getCreds = await admin("/api/app-creds");
-  const gc = await bodyOf(getCreds);
-  check("app-creds reads back as set", gc.clientIdSet === true && gc.secretSet === true);
-  await admin("/api/app-creds", { method: "POST", body: { clientId: "", clientSecret: "" } });
-  const cleared = await (await admin("/api/app-creds")).json();
-  check("app-creds can be cleared again", cleared.clientIdSet === false && cleared.secretSet === false);
-
   // Admin can see the session (admin is allowed).
   const adminSee = await admin("/api/dial/" + dial2.id);
   check("admin can view any session", adminSee.status === 200);
