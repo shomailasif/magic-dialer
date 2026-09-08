@@ -154,6 +154,24 @@ async function customer(pathname, opts = {}) {
   check("ringcentral JWT: Basic auth still from client id/secret", !!jwtReq && jwtReq.headers.Authorization.indexOf("Basic") === 0);
   check("ringcentral JWT: completes as ringing over 443", outboundRcJwt.status === "ringing" && outboundRcJwt.providerRef === "rc-jwt-sess-1");
 
+  // RingCentral driver per-customer keys: a customer's own app creds win over the portal env.
+  const rcreqC = [];
+  const rcCtxC = {
+    portalId: "main",
+    env: { RC_CLIENT_ID: "portal-app", RC_CLIENT_SECRET: "portal-secret", RC_JWT: "portal-jwt" },
+    fetch: async (url, opts) => {
+      rcreqC.push({ url, headers: opts.headers, body: opts.body });
+      if (url.indexOf("/oauth/token") >= 0) return { ok: true, status: 200, json: async () => ({ access_token: "tok-cust" }) };
+      return { ok: true, status: 200, json: async () => ({ session: { id: "rc-cust-sess-1" } }) };
+    },
+  };
+  const rcCustVoip = Object.assign({}, rcCust.customer.settings.voip, { appClientId: "cust-app", appClientSecret: "cust-secret", appJwt: "cust-jwt" });
+  const outboundRcCust = await trunk.placeCall(rcCtxC, { customer: Object.assign({}, rcCust.customer, { settings: Object.assign({}, rcCust.customer.settings, { voip: rcCustVoip }) }), destination: "+1 555 0100" });
+  const custReq = rcreqC.find((r) => r.url.indexOf("/oauth/token") >= 0);
+  check("ringcentral: customer's own app id/secret take priority over portal env", !!custReq && custReq.headers.Authorization.indexOf(Buffer.from("cust-app:cust-secret").toString("base64")) >= 0);
+  check("ringcentral: customer's own JWT assertion is posted", !!custReq && custReq.body.indexOf("assertion=cust-jwt") >= 0);
+  check("ringcentral: customer-owned creds complete as ringing", outboundRcCust.status === "ringing" && outboundRcCust.providerRef === "rc-cust-sess-1");
+
   // RingCentral driver surfaces a rejected token cleanly (injected fetch).
   const rcreq2 = [];
   const rcCtx2 = {
