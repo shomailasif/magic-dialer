@@ -497,7 +497,7 @@ function Show-ManageForm {
   Update-VoipFields
 
   $lblMg = Add-Lbl $f2 24 588 472 30
-  $lblMg.Text = "Changes are applied by the live agent on its next heartbeat."
+  $lblMg.Text = "Changes are applied by the live agent on its next heartbeat. For calls: type full numbers with country code (e.g. +92 300 1234567)."
   $lblMg.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 
   $btnImp.Add_Click({
@@ -594,11 +594,15 @@ function Show-ManageForm {
       $cc = New-Object System.Net.CookieContainer
       $loginJson = @{ token = $token } | ConvertTo-Json -Compress
       $null = Post-JsonBody ($portal + "/clogin") $loginJson $cc
+      $lblMg.ForeColor = $cAmber; $lblMg.Text = "IMPORTANT: RingOut rings THIS line first - answer it, then the called number rings."
+      [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 1500; [System.Windows.Forms.Application]::DoEvents()
       $placed = 0; $ringing = 0
       foreach ($rawNum in $nums) {
         $d = ($rawNum -replace '\D', "")
         if ($d.Length -lt 10) { $lblMg.ForeColor = $cRed; $lblMg.Text = "'$rawNum' looks incomplete - skipped."; [System.Windows.Forms.Application]::DoEvents(); continue }
-        if ($d.Length -eq 10) { $d = "1" + $d }
+        if ($d.Length -ge 12 -and $d.StartsWith("00")) { $d = $d.Substring(2) }                 # 00 international prefix
+        elseif ($d.Length -eq 11 -and $d.StartsWith("0")) { $d = "92" + $d.Substring(1) }      # national 0xx -> +92
+        elseif ($d.Length -eq 10) { $d = "1" + $d }                                             # US/CA local -> +1
         $e164 = "+" + $d
         $lblMg.ForeColor = $cCyan; $lblMg.Text = "Calling $e164 ..."; [System.Windows.Forms.Application]::DoEvents()
         try {
