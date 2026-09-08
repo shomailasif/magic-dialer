@@ -226,7 +226,7 @@ $btnManage.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnManage.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($btnManage)
 
-function Get-Cfg { try { Get-Content -LiteralPath $cfgDir\config.json -Raw | ConvertFrom-Json } catch { $null } }
+function Get-Cfg { try { Get-Content -LiteralPath (Join-Path $cfgDir "config.json") -Raw | ConvertFrom-Json } catch { $null } }
 
 function Post-JsonBody([string]$url, [string]$json, [System.Net.CookieContainer]$cc, [string]$method) {
   if (-not $method) { $method = "POST" }
@@ -607,7 +607,7 @@ function Show-ManageForm {
         server = $voipServer; port = $tVPrt.Text.Trim(); transport = $tVTrn.Text.Trim()
         ready = ($voipProvider -ne "" -and $tVNum.Text.Trim() -ne "" -and $tVUsr.Text.Trim() -ne "" -and ($hostedProviders -contains $voipProvider -or $voipServer -ne ""))
       }
-        [System.IO.File]::WriteAllText($cfgDir\config.json, ($c2 | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText((Join-Path $cfgDir "config.json"), ($c2 | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
       }
       $lblMg.ForeColor = $cGreen; $lblMg.Text = "Saved. The agent applies it on its next heartbeat (~seconds)."
     } catch {

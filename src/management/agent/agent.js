@@ -241,21 +241,58 @@ function post(url, body) {
   }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
 }
 
-/** Hide our own console and open the animated cockpit (packaged exe only). */
-function showCockpit(configDir) {
-  const isPacked = path.basename(process.execPath).toLowerCase().includes("magicdialer");
-  if (!isPacked) return;
-  if (process.env.MAGICDIALER_NO_COCKPIT === "1") return;
+/** Hide our own console window (the cockpit becomes the app's face). */
+function hideConsole() {
   try {
     spawn("powershell.exe", [
       "-NoProfile", "-WindowStyle", "Hidden", "-Command",
       "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class HC{[DllImport(\"kernel32.dll\")]public static extern IntPtr GetConsoleWindow();[DllImport(\"user32.dll\")]public static extern bool ShowWindow(IntPtr h,int c);}';[HC]::ShowWindow([HC]::GetConsoleWindow(),0)",
-    ], { stdio: "ignore" });
-    const cockpit = path.join(path.dirname(process.execPath), "cockpit.ps1");
-    if (fs.existsSync(cockpit)) {
-      spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", cockpit], { stdio: "ignore" });
+    ], { stdio: "ignore", windowsHide: true });
+  } catch { /* optional */ }
+}
+
+/** Open the animated cockpit. Only if it survives do we hide our console, so
+ *  the double-click can NEVER end up with zero visible windows. */
+function showCockpit(configDir) {
+  const isPacked = path.basename(process.execPath).toLowerCase().includes("magicdialer");
+  if (!isPacked) return;
+  if (process.env.MAGICDIALER_NO_COCKPIT === "1") return;
+  let cockpitAlive = false;
+  const cockpit = path.join(path.dirname(process.execPath), "cockpit.ps1");
+  if (fs.existsSync(cockpit)) {
+    try {
+      const cp = spawn("powershell.exe", [
+        "-NoProfile", "-Sta", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", cockpit,
+      ], { stdio: "ignore", windowsHide: true });
+      cockpitAlive = true;
+      cp.on("exit", () => { cockpitAlive = false; });
+    } catch {}
+  }
+  setTimeout(() => {
+    if (cockpitAlive) {
+      hideConsole();
+    } else {
+      log("cockpit window did not start - keeping the console window open.");
     }
-  } catch { /* cockpit is optional */ }
+  }, 2500);
+}
+
+/** One agent per customer PC: an extra icon double-click must not stack a
+ *  second live agent. Only enforced for the packaged exe (not dev/test runs). */
+const AGENT_LOCK = path.join(os.homedir(), "AppData", "Local", "Magic Dialer", "agent.lock");
+
+function takeAgentLock() {
+  if (!path.basename(process.execPath).toLowerCase().includes("magicdialer")) return true;
+  try {
+    if (fs.existsSync(AGENT_LOCK)) {
+      const old = Number(String(fs.readFileSync(AGENT_LOCK, "utf8")).trim());
+      if (old && pidAlive(old)) return false;
+    }
+    fs.mkdirSync(path.dirname(AGENT_LOCK), { recursive: true });
+    fs.writeFileSync(AGENT_LOCK, String(process.pid));
+    process.on("exit", () => { try { fs.unlinkSync(AGENT_LOCK); } catch {} });
+    return true;
+  } catch { return true; }
 }
 
 const { createInterface } = require("node:readline");
@@ -272,6 +309,10 @@ function ask(question) {
  * machines on one computer. If `opts.setup` is true, run the setup form.
  */
 async function runAgent(opts = {}) {
+  if (!takeAgentLock()) {
+    log("a Magic Dialer agent is already running (see the open console window) - this click is a no-op.");
+    process.exit(0);
+  }
   const cfgPath = opts.configPath || defaultConfigPath();
   let config = loadConfig(cfgPath);
 
