@@ -137,7 +137,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in cockpit + status. */
-const VERSION = "1.1.0";
+const VERSION = "1.1.1";
 
 /**
  * Roll a call result into the customer's lifetime + daily stats, persisted in
@@ -241,40 +241,21 @@ function post(url, body) {
   }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
 }
 
-/** Hide our own console window (the cockpit becomes the app's face). */
-function hideConsole() {
-  try {
-    spawn("powershell.exe", [
-      "-NoProfile", "-WindowStyle", "Hidden", "-Command",
-      "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class HC{[DllImport(\"kernel32.dll\")]public static extern IntPtr GetConsoleWindow();[DllImport(\"user32.dll\")]public static extern bool ShowWindow(IntPtr h,int c);}';[HC]::ShowWindow([HC]::GetConsoleWindow(),0)",
-    ], { stdio: "ignore", windowsHide: true });
-  } catch { /* optional */ }
-}
-
-/** Open the animated cockpit. Only if it survives do we hide our console, so
- *  the double-click can NEVER end up with zero visible windows. */
-function showCockpit(configDir) {
+/** Open the animated cockpit (bonus UI layer). The agent console window is
+ *  NEVER hidden, so a double-click on the app always leaves a visible window
+ *  that shows live status, no matter what the cockpit does. */
+function tryCockpit(configDir) {
   const isPacked = path.basename(process.execPath).toLowerCase().includes("magicdialer");
   if (!isPacked) return;
   if (process.env.MAGICDIALER_NO_COCKPIT === "1") return;
-  let cockpitAlive = false;
   const cockpit = path.join(path.dirname(process.execPath), "cockpit.ps1");
   if (fs.existsSync(cockpit)) {
     try {
-      const cp = spawn("powershell.exe", [
+      spawn("powershell.exe", [
         "-NoProfile", "-Sta", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", cockpit,
-      ], { stdio: "ignore", windowsHide: true });
-      cockpitAlive = true;
-      cp.on("exit", () => { cockpitAlive = false; });
+      ], { stdio: "ignore" });
     } catch {}
   }
-  setTimeout(() => {
-    if (cockpitAlive) {
-      hideConsole();
-    } else {
-      log("cockpit window did not start - keeping the console window open.");
-    }
-  }, 2500);
 }
 
 /** One agent per customer PC: an extra icon double-click must not stack a
@@ -362,7 +343,7 @@ async function runAgent(opts = {}) {
   }
 
   const configDir = path.dirname(cfgPath);
-  showCockpit(configDir);
+  tryCockpit(configDir);
   const productLabel = config.product || "Magic Dialer customer";
 
   // One status writer for the cockpit: always carries brand + stats + feed.
@@ -382,6 +363,14 @@ async function runAgent(opts = {}) {
   ui({ status: "STARTING", mode: "idle", line: "Starting Magic Dialer agent..." });
 
   const portal = config.portalUrl.replace(/\/+$/, "");
+  log("");
+  log("============================================================");
+  log("            MAGIC DIALER  v" + VERSION + "  -  RUNNING");
+  log("  Customer : " + (config.companyName || config.product || productLabel));
+  log("  Portal   : " + portal);
+  log("  Status   : waiting for heartbeat  (leave this window open)");
+  log("============================================================");
+  log("");
 
   // Optional: run one live voice call before entering the heartbeat loop.
   // `--call` makes the agent speak through the speakers and listen through
