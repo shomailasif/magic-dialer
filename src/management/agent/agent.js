@@ -2,7 +2,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
 const crypto = require("node:crypto");
-const { spawn } = require("node:child_process");
+const { spawn, execSync } = require("node:child_process");
 const { HEARTBEAT_INTERVAL_MS } = require("../shared/protocol");
 const { setUi } = require("./ui");
 const { topStrategy } = require("./brain");
@@ -137,7 +137,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in cockpit + status. */
-const VERSION = "1.1.1";
+const VERSION = "1.1.2";
 
 /**
  * Roll a call result into the customer's lifetime + daily stats, persisted in
@@ -262,12 +262,21 @@ function tryCockpit(configDir) {
  *  second live agent. Only enforced for the packaged exe (not dev/test runs). */
 const AGENT_LOCK = path.join(os.homedir(), "AppData", "Local", "Magic Dialer", "agent.lock");
 
+function pidIsMagicDialer(pid) {
+  try {
+    const out = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
+    });
+    return /magicdialer\.exe/i.test(out);
+  } catch { return false; }
+}
+
 function takeAgentLock() {
   if (!path.basename(process.execPath).toLowerCase().includes("magicdialer")) return true;
   try {
     if (fs.existsSync(AGENT_LOCK)) {
       const old = Number(String(fs.readFileSync(AGENT_LOCK, "utf8")).trim());
-      if (old && pidAlive(old)) return false;
+      if (old && pidAlive(old) && pidIsMagicDialer(old)) return false;
     }
     fs.mkdirSync(path.dirname(AGENT_LOCK), { recursive: true });
     fs.writeFileSync(AGENT_LOCK, String(process.pid));
@@ -290,9 +299,27 @@ function ask(question) {
  * machines on one computer. If `opts.setup` is true, run the setup form.
  */
 async function runAgent(opts = {}) {
-  if (!takeAgentLock()) {
-    log("a Magic Dialer agent is already running (see the open console window) - this click is a no-op.");
-    process.exit(0);
+  /** Bring the already-open dashboard window to the front (no second copy). */
+function bringDashboardFront() {
+  const ps = [
+    "Add-Type -AssemblyName Microsoft.VisualBasic;",
+    "$w = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Magic Dialer*' } | Select-Object -First 1;",
+    "if ($w) { [Microsoft.VisualBasic.Interaction]::AppActivate($w.Id) } else { $null }",
+  ].join(" ");
+  try {
+    execSync(`powershell -NoProfile -Command "& { ${ps} }"`, {
+      windowsHide: true, stdio: "ignore",
+    });
+    return true;
+  } catch { return false; }
+}
+
+if (!takeAgentLock()) {
+    log("Magic Dialer is already running - focusing its dashboard...");
+    const focused = bringDashboardFront();
+    if (!focused) { tryCockpit(path.dirname(defaultConfigPath())); }
+    setTimeout(() => process.exit(0), 1500);
+    return;
   }
   const cfgPath = opts.configPath || defaultConfigPath();
   let config = loadConfig(cfgPath);
