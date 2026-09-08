@@ -215,6 +215,411 @@ $btnTest.Add_Click({
   $ticker.ForeColor = $cGreen
 })
 
+# ======================= Manage agent =======================
+$btnManage = New-Object System.Windows.Forms.Button
+$btnManage.Text = "Manage"
+$btnManage.Location = New-Object System.Drawing.Point(588, 548)
+$btnManage.Size = New-Object System.Drawing.Size(152, 40)
+$btnManage.BackColor = $cPanel2
+$btnManage.ForeColor = $cViolet
+$btnManage.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnManage.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$form.Controls.Add($btnManage)
+
+function Get-Cfg { try { Get-Content -LiteralPath $cfgDir\config.json -Raw | ConvertFrom-Json } catch { $null } }
+
+function Post-JsonBody([string]$url, [string]$json, [System.Net.CookieContainer]$cc, [string]$method) {
+  if (-not $method) { $method = "POST" }
+  $req = [System.Net.HttpWebRequest]::Create($url)
+  $req.Method = $method.ToUpper()
+  $req.ContentType = "application/json"
+  $req.CookieContainer = $cc
+  $req.Timeout = 30000
+  if ($json) {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $req.ContentLength = $bytes.Length
+    $stream = $req.GetRequestStream()
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Close()
+  }
+  $resp = $req.GetResponse()
+  $rd = New-Object System.IO.StreamReader($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
+  $body = $rd.ReadToEnd(); $rd.Close(); $resp.Close()
+  return $body
+}
+
+# ---- pull readable text out of a PDF (uncompressed text streams) ----
+function Get-PdfText([string]$path) {
+  $bytes = [System.IO.File]::ReadAllBytes($path)
+  $s = [System.Text.Encoding]::ASCII.GetString($bytes)
+  $out = New-Object System.Text.StringBuilder
+  foreach ($m in [regex]::Matches($s, '\(((?:[^()\\]|\\.)*)\)\s*Tj')) {
+    $txt = $m.Groups[1].Value
+    $txt = $txt -replace '\\\(', "("
+    $txt = $txt -replace '\\\)', ")"
+    $txt = $txt -replace '\\\\', "\"
+    [void]$out.Append($txt + " ")
+  }
+  return $out.ToString()
+}
+
+# ---- pull text out of a .xlsx (it is a zip of xml) ----
+function Get-XlsxText([string]$path) {
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $zip = [System.IO.Compression.ZipFile]::OpenRead($path)
+  $ss = ""; $sheet = ""
+  try {
+    foreach ($e in $zip.Entries) {
+      $n = $e.FullName
+      if ($n -eq "xl/sharedStrings.xml") {
+        $sr = New-Object System.IO.StreamReader($e.Open()); $ss = $sr.ReadToEnd(); $sr.Close()
+      } elseif ($n -match '^xl/worksheets/sheet1\.xml$') {
+        $sr = New-Object System.IO.StreamReader($e.Open()); $sheet = $sr.ReadToEnd(); $sr.Close()
+      }
+    }
+  } finally { $zip.Dispose() }
+  $out = New-Object System.Text.StringBuilder
+  $map = @{}
+  if ($ss) {
+    $i = 0
+    foreach ($x in [regex]::Matches($ss, '<si>.*?</si>', [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+      $txt = [regex]::Replace($x.Value, '<[^>]+>', "")
+      $map[$i] = $txt; $i++
+    }
+  }
+  if ($sheet) {
+    $reRow = [regex]::Match($sheet, '<dimension[^>]*/>')
+    foreach ($row in [regex]::Matches($sheet, '<row[^>]*>.*?</row>', [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+      $cells = @()
+      foreach ($c in [regex]::Matches($row.Value, '<c[^>]*>.*?</c>', [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+        $t = $null
+        if ($c.Value -match 't="s"') {
+          if ($c.Value -match '<v>(\d+)</v>') { $t = $map[[int]$Matches[1]] }
+        } elseif ($c.Value -match '<is><t[^>]*>([^<]*)</t></is>') { $t = $Matches[1] }
+        elseif ($c.Value -match '<v>([^<]*)</v>') { $t = $Matches[1] }
+        if ($null -ne $t -and ($t.ToString().Trim().Length -gt 0)) { $cells += $t.ToString().Trim() }
+      }
+      if ($cells.Count -gt 0) { [void]$out.AppendLine(($cells -join " ")) }
+    }
+  }
+  return $out.ToString()
+}
+
+# ---- grab numbers out of a messy raw list; keep names/notes ----
+function Convert-ListText([string]$raw) {
+  $entries = @{}
+  $order = New-Object System.Collections.ArrayList
+  $phoneRx = '(?:^|\D)((?:\+?\d{1,3}[\s.-]*)?(?:\(\d{3}\)|\d{3})[\s.-]*\d{3}[\s.-]*\d{4})(?:\D|$)'
+  foreach ($ln in ($raw -split "`r?`n")) {
+    $line = $ln.Trim()
+    if ($line.Length -eq 0) { continue }
+    $spans = @()
+    $pos = 0
+    while ($pos -le $line.Length - 1) {
+      $sub = $line.Substring($pos)
+      $m = [regex]::Match($sub, $phoneRx)
+      if (-not $m.Success) { break }
+      $start = $pos + $m.Index
+      $end = $start + $m.Length
+      $digits = ($m.Groups[1].Value -replace '\D', "")
+      if ($digits.Length -ge 10) { $spans += [pscustomobject]@{ s = $start; e = $end; digits = $digits } }
+      $pos = $end
+      if ($m.Length -eq 0) { break }
+    }
+    foreach ($sp in $spans) {
+      $digits = $sp.digits
+      if ($digits.Length -gt 10) { $digits = $digits.Substring($digits.Length - 10) }
+      $lbl = ""
+      $prev = 0
+      foreach ($o in $spans) { $lbl += $line.Substring($prev, $o.s - $prev) + " "; $prev = $o.e }
+      $lbl += $line.Substring($prev)
+      $lbl = [regex]::Replace($lbl, '[,;:|\d\-\.\(\)\+]', " ")
+      $lbl = [regex]::Replace($lbl, '\s{2,}', " ").Trim()
+      if ($lbl.Length -lt 2) { $lbl = "" }
+      if ($entries.ContainsKey($digits)) {
+        if ($lbl -and -not $entries[$digits]) { $entries[$digits] = $lbl }
+      } else {
+        $entries[$digits] = $lbl
+        [void]$order.Add($digits)
+      }
+    }
+  }
+  $out = @()
+  foreach ($n in $order) {
+    $lbl = $entries[$n]
+    if ($lbl) { $out += ($lbl + " | " + $n) } else { $out += $n }
+  }
+  return $out
+}
+
+# merge new entries into the existing box (no duplicates; upgrade a plain number with a name when known)
+function Merge-ListText([string[]]$newEntries, [string]$existing) {
+  $merged = New-Object System.Collections.ArrayList
+  $known = @{}
+  foreach ($e in ($existing -split "`r?`n")) {
+    $t = $e.Trim()
+    if ($t.Length -eq 0) { continue }
+    [void]$merged.Add($t)
+    $parts = $t -split '\|'
+    $num = $parts[$parts.Count - 1].Trim()
+    $d = ($num -replace '\D', "")
+    if ($d.Length -gt 10) { $d = $d.Substring($d.Length - 10) }
+    if ($d.Length -ge 10) { $known[$d] = $t }
+  }
+  $added = 0
+  foreach ($en in $newEntries) {
+    $parts = $en -split '\|'
+    $num = $parts[$parts.Count - 1].Trim()
+    $d = ($num -replace '\D', "")
+    if ($d.Length -gt 10) { $d = $d.Substring($d.Length - 10) }
+    if ($known.ContainsKey($d)) {
+      $old = $known[$d]
+      if ($old -notmatch '\|' -and $en -match '\|') {
+        for ($i = 0; $i -lt $merged.Count; $i++) {
+          $cParts = $($merged[$i]) -split '\|'
+          $cNum = $cParts[$cParts.Count - 1].Trim()
+          $cD = ($cNum -replace '\D', "")
+          if ($cD.Length -gt 10) { $cD = $cD.Substring($cD.Length - 10) }
+          if ($cD -eq $d) { $merged[$i] = $en; $known[$d] = $en; break }
+        }
+      }
+    } else {
+      $known[$d] = $en
+      [void]$merged.Add($en)
+      $added++
+    }
+  }
+  return [pscustomobject]@{ Text = ($merged -join "`r`n"); New = $added; Found = $newEntries.Count }
+}
+
+function Show-ManageForm {
+  $cfg = Get-Cfg
+  if (-not $cfg) { [System.Windows.Forms.MessageBox]::Show("No agent config found.", "Magic Dialer"); return }
+  $portal = $cfg.portalUrl
+  $token  = $cfg.token
+  $voip   = $cfg.voip
+
+  $f2 = New-Object System.Windows.Forms.Form
+  $f2.Text = "Manage agent"
+  $f2.StartPosition = "CenterParent"
+  $f2.FormBorderStyle = "FixedDialog"
+  $f2.MaximizeBox = $false; $f2.MinimizeBox = $false
+  $f2.BackColor = $cBg
+  $f2.ClientSize = New-Object System.Drawing.Size(520, 624)
+
+  function Add-Lbl($f, $x, $y, $w, $txt) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $txt; $l.Location = New-Object System.Drawing.Point($x, $y)
+    $l.Size = New-Object System.Drawing.Size($w, 20); $l.ForeColor = $cDim
+    $l.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $f.Controls.Add($l); return $l
+  }
+  function Add-Txt($f, $x, $y, $w, $h) {
+    $tb = New-Object System.Windows.Forms.TextBox
+    $tb.Location = New-Object System.Drawing.Point($x, $y)
+    $tb.Size = New-Object System.Drawing.Size($w, $h)
+    $tb.BackColor = $cPanel2; $tb.ForeColor = $cText
+    $tb.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $f.Controls.Add($tb); return $tb
+  }
+
+  Add-Lbl $f2 24 20 280 "AGENT NAME (SAYS THIS ON CALLS)"
+  $tName   = Add-Txt $f2 24 42 472 26
+  $tName.Text = [string]$cfg.persona
+  Add-Lbl $f2 24 82 280 "PRODUCT / SERVICE"
+  $tProd   = Add-Txt $f2 24 104 472 26
+  $tProd.Text = [string]$cfg.product
+  Add-Lbl $f2 24 144 270 "NUMBERS TO CALL (TYPE OR IMPORT A LIST)"
+  $btnImp  = New-Object System.Windows.Forms.Button
+  $btnImp.Text = "Import file..."
+  $btnImp.Location = New-Object System.Drawing.Point(298, 140)
+  $btnImp.Size = New-Object System.Drawing.Size(198, 26)
+  $btnImp.BackColor = $cPanel2; $btnImp.ForeColor = $cCyan
+  $btnImp.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+  $btnImp.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+  $f2.Controls.Add($btnImp)
+  $tNums   = Add-Txt $f2 24 168 472 92
+  $tNums.Multiline = $true
+  $tNums.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+  $tNums.WordWrap = $false
+  $tNums.Font = New-Object System.Drawing.Font("Consolas", 9)
+  $tNums.Text = (@($cfg.callList | ForEach-Object { [string]$_ }) -join "`r`n")
+
+  Add-Lbl $f2 24 278 472 "CALL OUT LINE (VOIP PROVIDER - PRIVATE TO THIS PC)"
+
+  $voipNum       = if ($voip) { [string]$voip.number } else { "" }
+  $voipUsr       = if ($voip) { [string]$voip.username } else { "" }
+  $voipPwd       = if ($voip) { [string]$voip.sipPassword } else { "" }
+  $voipExt       = if ($voip) { [string]$voip.extension } else { "" }
+  $voipProvider  = if ($voip) { [string]$voip.provider } else { "" }
+  $voipServer    = if ($voip) { [string]$voip.server } else { "" }
+  $voipPort      = if ($voip) { [string]$voip.port } else { "" }
+  $voipTransport = if ($voip) { [string]$voip.transport } else { "" }
+
+  $cmbProv = New-Object System.Windows.Forms.ComboBox
+  $cmbProv.Items.AddRange(@("ringcentral","twilio","vonage","plivo","flowroute","thinq","myexotel","asterisk","freepbx","generic","sim","custom"))
+  $cmbProv.Text = $voipProvider
+  $cmbProv.Location = New-Object System.Drawing.Point(24, 300)
+  $cmbProv.Size = New-Object System.Drawing.Size(472, 26)
+  $cmbProv.BackColor = $cPanel2; $cmbProv.ForeColor = $cText
+  $cmbProv.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDown
+  $f2.Controls.Add($cmbProv)
+
+  Add-Lbl $f2 24 338 230 "CALLER ID / NUMBER"
+  Add-Lbl $f2 270 338 226 "EXTENSION (OPTIONAL)"
+  $tVNum = Add-Txt $f2 24 360 230 26; $tVNum.Text = $voipNum
+  $tVExt = Add-Txt $f2 270 360 226 26; $tVExt.Text = $voipExt
+  Add-Lbl $f2 24 398 230 "SIP USERNAME / AUTH ID"
+  Add-Lbl $f2 270 398 226 "SIP PASSWORD"
+  $tVUsr = Add-Txt $f2 24 420 230 26; $tVUsr.Text = $voipUsr
+  $tVPwd = Add-Txt $f2 270 420 226 26; $tVPwd.Text = $voipPwd
+
+  # Custom SIP servers carry their own server/port/transport (hosted defaults are read-only).
+  $hostedProviders = @("ringcentral","twilio","vonage","plivo","flowroute","thinq","myexotel")
+  $defaultServers  = @{ ringcentral = "sip.ringcentral.com"; twilio = "sip-1042-sip.twilio.com"; vonage = "sip.nexmo.com"; plivo = "sip.plivo.com"; thinq = "sip.thinq.com"; flowroute = "sip.flowroute.com"; myexotel = "voip.myexotel.com" }
+  $lblSrv = Add-Lbl $f2 24 462 210 "SIP SERVER (CUSTOM PROVIDERS)"
+  $lblPrt = Add-Lbl $f2 270 462 90 "PORT"
+  $lblTrn = Add-Lbl $f2 380 462 116 "TRANSPORT"
+  $tVSrv = Add-Txt $f2 24 484 230 26; $tVSrv.Text = $voipServer
+  $tVPrt = Add-Txt $f2 270 484 90 26; $tVPrt.Text = $voipPort
+  $tVTrn = Add-Txt $f2 380 484 116 26; $tVTrn.Text = $voipTransport
+
+  function Update-VoipFields {
+    if ($hostedProviders -contains $cmbProv.Text) {
+      $tVSrv.Text = [string]$defaultServers[$cmbProv.Text]
+      $tVSrv.Enabled = $false; $tVPrt.Enabled = $false; $tVTrn.Enabled = $false
+    } else {
+      $tVSrv.Enabled = $true; $tVPrt.Enabled = $true; $tVTrn.Enabled = $true
+    }
+  }
+  $cmbProv.Add_SelectedIndexChanged({ Update-VoipFields })
+  $cmbProv.Add_TextChanged({ Update-VoipFields })
+  Update-VoipFields
+
+  $lblMg = Add-Lbl $f2 24 588 472 30
+  $lblMg.Text = "Changes are applied by the live agent on its next heartbeat."
+  $lblMg.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+
+  $btnImp.Add_Click({
+    $ofd = New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Title = "Pick a call list (PDF / Excel / CSV / TXT)"
+    $ofd.Filter = "Call lists (*.txt;*.csv;*.xlsx;*.xls;*.pdf)|*.txt;*.csv;*.xlsx;*.xls;*.pdf|All files (*.*)|*.*"
+    if ($ofd.ShowDialog($f2) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+    $path = $ofd.FileName
+    $lblMg.ForeColor = $cAmber
+    $lblMg.Text = "Reading " + [System.IO.Path]::GetFileName($path) + "..."
+    try {
+      $raw = ""
+      $ext = [System.IO.Path]::GetExtension($path).ToLower()
+      if ($ext -eq ".pdf") { $raw = Get-PdfText $path }
+      elseif ($ext -eq ".xlsx") { $raw = Get-XlsxText $path }
+      elseif ($ext -eq ".xls") {
+        try {
+          $excel = New-Object -ComObject Excel.Application
+          $excel.Visible = $false
+          $wb = $excel.Workbooks.Open($path)
+          $ws = $wb.Worksheets.Item(1)
+          $used = $ws.UsedRange
+          $rows = $used.Rows.Count
+          $cols = $used.Columns.Count
+          $lines = New-Object System.Collections.ArrayList
+          for ($r = 1; $r -le $rows; $r++) {
+            $cells = @()
+            for ($c2 = 1; $c2 -le $cols; $c2++) {
+              $v = [string]$used.Cells.Item($r, $c2).Text
+              if ($v) { $cells += $v }
+            }
+            if ($cells.Count -gt 0) { [void]$lines.Add(($cells -join " ")) }
+          }
+          $raw = $lines -join "`r`n"
+          $wb.Close($false)
+          $excel.Quit()
+          [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel)
+        } catch {
+          $lblMg.ForeColor = $cRed
+          $lblMg.Text = "That .xls could not open here. In Excel: File > Save As > .xlsx or .csv, then import again."
+          return
+        }
+      }
+      else { $raw = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) }
+
+      $newEntries = @(Convert-ListText $raw)
+      if ($newEntries.Count -eq 0) {
+        $lblMg.ForeColor = $cRed
+        $lblMg.Text = "No phone numbers found in that file. If it is a scanned PDF, export it to .csv or .txt first."
+        return
+      }
+      $res = Merge-ListText $newEntries $tNums.Text
+      $tNums.Text = $res.Text
+      $lblMg.ForeColor = $cGreen
+      $lblMg.Text = "Imported " + $res.New + " new number(s) (found " + $res.Found + "). Names and notes kept next to each entry. Review, then Save."
+    } catch {
+      $lblMg.ForeColor = $cRed
+      $lblMg.Text = "Couldn't read the file: " + $_.Exception.Message
+    }
+  })
+
+  $btnSave = New-Object System.Windows.Forms.Button
+  $btnSave.Text = "Save"
+  $btnSave.Location = New-Object System.Drawing.Point(24, 530)
+  $btnSave.Size = New-Object System.Drawing.Size(110, 44)
+  $btnSave.BackColor = $cPanel2; $btnSave.ForeColor = $cGreen
+  $btnSave.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+  $btnSave.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+  $f2.Controls.Add($btnSave)
+
+  $btnCancel = New-Object System.Windows.Forms.Button
+  $btnCancel.Text = "Close"
+  $btnCancel.Location = New-Object System.Drawing.Point(144, 530)
+  $btnCancel.Size = New-Object System.Drawing.Size(100, 44)
+  $btnCancel.BackColor = $cPanel2; $btnCancel.ForeColor = $cDim
+  $btnCancel.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+  $f2.Controls.Add($btnCancel)
+  $btnCancel.Add_Click({ $f2.Close() })
+
+  $btnSave.Add_Click({
+    $lblMg.ForeColor = $cAmber; $lblMg.Text = "Saving... please wait"
+    $cc = New-Object System.Net.CookieContainer
+    $voipProvider = $cmbProv.Text.Trim()
+    $voipServer = if ($tVSrv.Enabled) { $tVSrv.Text.Trim() } else { "" }
+    $voipObj = @{
+      provider = $voipProvider; number = $tVNum.Text.Trim(); extension = $tVExt.Text.Trim()
+      username = $tVUsr.Text.Trim(); sipPassword = $tVPwd.Text
+      server = $voipServer; port = $tVPrt.Text.Trim(); transport = $tVTrn.Text.Trim()
+    }
+    if ($voipServer -eq "") { $voipObj.Remove("server") }
+    try {
+      $loginJson = @{ token = $token } | ConvertTo-Json -Compress
+      $null = Post-JsonBody ($portal + "/clogin") $loginJson $cc
+      $patchJson = @{ product = $tProd.Text; persona = $tName.Text; settings = @{ voip = $voipObj } } | ConvertTo-Json -Compress -Depth 5
+      $null = Post-JsonBody ($portal + "/api/customer/" + $token) $patchJson $cc "PATCH"
+      $nums = @($tNums.Text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+      $callJson = @{ numbers = $nums } | ConvertTo-Json -Compress -Depth 4
+      $null = Post-JsonBody ($portal + "/api/customer/" + $token + "/calllist") $callJson $cc
+      $c2 = Get-Cfg
+      if ($c2) {
+        $c2.persona = $tName.Text
+        $c2.product = $tProd.Text
+        $c2.callList = $nums
+        $c2.voip = @{
+        provider = $voipProvider; number = $tVNum.Text.Trim(); extension = $tVExt.Text.Trim()
+        username = $tVUsr.Text.Trim(); sipPassword = $tVPwd.Text
+        server = $voipServer; port = $tVPrt.Text.Trim(); transport = $tVTrn.Text.Trim()
+        ready = ($voipProvider -ne "" -and $tVNum.Text.Trim() -ne "" -and $tVUsr.Text.Trim() -ne "" -and ($hostedProviders -contains $voipProvider -or $voipServer -ne ""))
+      }
+        [System.IO.File]::WriteAllText($cfgDir\config.json, ($c2 | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+      }
+      $lblMg.ForeColor = $cGreen; $lblMg.Text = "Saved. The agent applies it on its next heartbeat (~seconds)."
+    } catch {
+      $lblMg.ForeColor = $cRed; $lblMg.Text = "Failed: " + $_.Exception.Message
+    }
+  })
+
+  [void]$f2.ShowDialog($form)
+}
+
+$btnManage.Add_Click({ Show-ManageForm })
+
 # ---- console renderer (professional equalizer, no cartoon) ----
 function Update-Console([System.Drawing.Graphics]$g) {
   $bx = 32; $by = 304; $barW = 10; $gap = 14; $bars = 30

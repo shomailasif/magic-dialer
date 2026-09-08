@@ -2434,6 +2434,15 @@ var { spawn } = require("node:child_process");
 var { HEARTBEAT_INTERVAL_MS } = require_protocol();
 var { setUi } = require_ui();
 var { topStrategy } = require_brain();
+var HOSTED_VOIP_SERVERS = {
+  ringcentral: "sip.ringcentral.com",
+  twilio: "sip-1042-sip.twilio.com",
+  vonage: "sip.nexmo.com",
+  plivo: "sip.plivo.com",
+  thinq: "sip.thinq.com",
+  flowroute: "sip.flowroute.com",
+  myexotel: "voip.myexotel.com"
+};
 function defaultConfigPath() {
   const base = process.env.AUTODIAL_HOME ? process.env.AUTODIAL_HOME : path.join(os.homedir(), ".magicdialer");
   return path.join(base, "config.json");
@@ -2545,16 +2554,21 @@ function applyPortalConfig(config, portalCfg, cfgPath) {
   if (typeof portalCfg.lang === "string" && /^(en|es|fr|de|pt|hi|auto)$/.test(portalCfg.lang.trim())) set("lang", portalCfg.lang.trim());
   if (typeof portalCfg.voiceStyle === "string" && /^(human|frank|friendly)$/.test(portalCfg.voiceStyle.trim())) set("voiceStyle", portalCfg.voiceStyle.trim());
   if (portalCfg.voip && typeof portalCfg.voip === "object" && portalCfg.voip.number && portalCfg.voip.username) {
+    const prior = config.voip || {};
+    const provider = portalCfg.voip.provider || prior.provider || "";
+    const defaultServer = HOSTED_VOIP_SERVERS[provider] || HOSTED_VOIP_SERVERS[prior.provider] || "";
     const next = {
-      provider: portalCfg.voip.provider || config.voip.provider || "ringcentral",
+      provider,
       number: portalCfg.voip.number,
       extension: portalCfg.voip.extension || "",
       username: portalCfg.voip.username,
       sipPassword: portalCfg.voip.sipPassword || "",
-      server: portalCfg.voip.server || config.voip.server || "sip.ringcentral.com",
+      server: portalCfg.voip.server || prior.server || defaultServer,
+      port: portalCfg.voip.port || prior.port || "",
+      transport: portalCfg.voip.transport || prior.transport || "",
       ready: true
     };
-    if (JSON.stringify(next) !== JSON.stringify(config.voip)) {
+    if (JSON.stringify(next) !== JSON.stringify(prior)) {
       config.voip = next;
       changed = true;
       pushActivity(config, `VOIP line applied (${next.provider}, ${next.number}) - outbound calls use it.`);

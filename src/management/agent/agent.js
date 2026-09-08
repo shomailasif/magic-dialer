@@ -7,6 +7,19 @@ const { HEARTBEAT_INTERVAL_MS } = require("../shared/protocol");
 const { setUi } = require("./ui");
 const { topStrategy } = require("./brain");
 
+// Hosted VOIP providers whose SIP registration domain is implied. Kept in
+// sync with the portal's trunk.js so the agent and the cloud agree on what a
+// "complete line" looks like for each vendor.
+const HOSTED_VOIP_SERVERS = {
+  ringcentral: "sip.ringcentral.com",
+  twilio: "sip-1042-sip.twilio.com",
+  vonage: "sip.nexmo.com",
+  plivo: "sip.plivo.com",
+  thinq: "sip.thinq.com",
+  flowroute: "sip.flowroute.com",
+  myexotel: "voip.myexotel.com",
+};
+
 /**
  * Customer PC agent.
  *
@@ -159,16 +172,21 @@ function applyPortalConfig(config, portalCfg, cfgPath) {
   if (typeof portalCfg.lang === "string" && /^(en|es|fr|de|pt|hi|auto)$/.test(portalCfg.lang.trim())) set("lang", portalCfg.lang.trim());
   if (typeof portalCfg.voiceStyle === "string" && /^(human|frank|friendly)$/.test(portalCfg.voiceStyle.trim())) set("voiceStyle", portalCfg.voiceStyle.trim());
   if (portalCfg.voip && typeof portalCfg.voip === "object" && portalCfg.voip.number && portalCfg.voip.username) {
+    const prior = config.voip || {};
+    const provider = portalCfg.voip.provider || prior.provider || "";
+    const defaultServer = HOSTED_VOIP_SERVERS[provider] || HOSTED_VOIP_SERVERS[prior.provider] || "";
     const next = {
-      provider: portalCfg.voip.provider || config.voip.provider || "ringcentral",
+      provider,
       number: portalCfg.voip.number,
       extension: portalCfg.voip.extension || "",
       username: portalCfg.voip.username,
       sipPassword: portalCfg.voip.sipPassword || "",
-      server: portalCfg.voip.server || config.voip.server || "sip.ringcentral.com",
+      server: portalCfg.voip.server || prior.server || defaultServer,
+      port: portalCfg.voip.port || prior.port || "",
+      transport: portalCfg.voip.transport || prior.transport || "",
       ready: true,
     };
-    if (JSON.stringify(next) !== JSON.stringify(config.voip)) {
+    if (JSON.stringify(next) !== JSON.stringify(prior)) {
       config.voip = next;
       changed = true;
       pushActivity(config, `VOIP line applied (${next.provider}, ${next.number}) - outbound calls use it.`);

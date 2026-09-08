@@ -13,7 +13,8 @@ $tests = @(
   "test-portal-isolation.js",
   "test-portal-lang.js",
   "test-voice-style.js",
-  "test-learning.js"
+  "test-learning.js",
+  "test-gateway.js"
 )
 $fail = 0
 foreach ($t in $tests) {
