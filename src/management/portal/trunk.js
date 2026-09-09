@@ -13,6 +13,8 @@
  *                     registration bridge lands.
  */
 const crypto = require("node:crypto");
+const net = require("node:net");
+const tls = require("node:tls");
 
 // Hosted provider -> default SIP registration domain (used by the cloud to
 // register the trunk later, and by driver selection today).
@@ -462,6 +464,85 @@ function getBatch(token) {
   return b ? batchSummary(b) : null;
 }
 
+/* Dev diagnostic: does an account's credentials register as a SIP soft-phone
+ * from THIS host? Used to prove unattended-call capability on a provider. */
+const md5 = (s) => crypto.createHash("md5").update(s, "ascii").digest("hex");
+function sipRegisterOnce(o) {
+  const user = String(o.user || "");
+  const pass = String(o.pass || "");
+  const authId = String(o.authId || user);
+  const ext = String(o.ext || "");
+  const host = String(o.host || "");
+  const port = Number(o.port || 5096);
+  const proto = o.proto === "tcp" ? "tcp" : "tls";
+  return new Promise((resolve) => {
+    const HOST = host || (proto === "tls" ? "sip.ringcentral.com:5096" : "sip.ringcentral.com");
+    const aorUser = user;
+    const aor = `sip:${aorUser}@${HOST}`;
+    const viaHost = host || (proto === "tls" ? "sip.ringcentral.com:5096" : "sip.ringcentral.com");
+    const steps = [];
+    let nonce = null, qop = null, authed = false, realm = null;
+    const authUser = authId || user;
+    const buildMsg = (cseq) => {
+      const lines = [
+        "REGISTER " + aor + " SIP/2.0",
+        `Via: SIP/2.0/${proto.toUpperCase()} ${viaHost};branch=z9hG4bK` + crypto.randomBytes(6).toString("hex"),
+        "Max-Forwards: 70",
+        "From: <" + aor + ">;tag=" + crypto.randomBytes(6).toString("hex"),
+        "To: <" + aor + ">",
+        "Call-ID: " + crypto.randomBytes(8).toString("hex"),
+        "CSeq: " + cseq + " REGISTER",
+        "Contact: <" + aor + ">",
+        "Expires: 300",
+        "User-Agent: MagicDialer-SIP/0.1",
+      ];
+      if (authed && nonce) {
+        const rlm = realm || HOST;
+        const HA1 = md5(`${authUser}:${rlm}:${pass}`);
+        let resp;
+        if (qop) {
+          const nc = "00000001", cn = crypto.randomBytes(4).toString("hex");
+          resp = md5(`${HA1}:${nonce}:${nc}:${cn}:${qop}:${md5("REGISTER:" + aor)}`);
+          lines.push(`Authorization: Digest username="${authUser}", realm="${rlm}", nonce="${nonce}", uri="${aor}", qop=${qop}, nc=${nc}, cnonce="${cn}", response="${resp}"`);
+        } else {
+          resp = md5(`${HA1}:${nonce}:${md5("REGISTER:" + aor)}`);
+          lines.push(`Authorization: Digest username="${authUser}", realm="${rlm}", nonce="${nonce}", uri="${aor}", response="${resp}"`);
+        }
+      }
+      lines.push("Content-Length: 0", "", "");
+      return lines.join("\r\n");
+    };
+    const done = (ok, line, extra) => {
+      try { sock.destroy(); } catch {}
+      resolve({ ok, host: viaHost, port, proto, user, authId: authUser, ext, steps, pass: "(hidden)", last: line, extra });
+    };
+    const onConn = () => sock.write(buildMsg(1));
+    const sock = proto === "tls"
+      ? tls.connect({ port, host: viaHost, servername: viaHost.split(":")[0], rejectUnauthorized: false }, onConn)
+      : net.connect(port, viaHost, onConn);
+    sock.setTimeout(12000);
+    let buf = "";
+    sock.on("data", (d) => {
+      buf += d.toString("ascii");
+      if (!buf.includes("\r\n\r\n")) return;
+      const txt = buf; buf = "";
+      const line = txt.split("\r\n")[0].trim();
+      steps.push(line);
+      const m = txt.match(/[Rr]eal[mM]="([^"]+)"/);
+      if (m) realm = m[1];
+      if (/401|407/.test(line) && !authed) {
+        authed = true;
+        nonce = (txt.match(/[Nn]once="([^"]+)"/) || [])[1] || null;
+        qop = (txt.match(/[Qq]op="([^"]*)"/) || [])[1] || null;
+        setTimeout(() => sock.write(buildMsg(2)), 200);
+      } else if (/200 OK/.test(line)) done(true, line);
+      else if (/^(403|404|484)/.test(line)) done(false, line);
+    });
+    sock.on("timeout", () => done(false, "no response (network or firewall)"));
+    sock.on("error", (e) => done(false, "connection error: " + e.message));
+  });
+}
+
 module.exports = {
   HOSTED_VOIP_SERVERS,
   voipComplete,
@@ -471,6 +552,7 @@ module.exports = {
   killSessionsFor,
   hangUp,
   twilioWebhook,
+  sipRegisterOnce,
   startBatch,
   stopBatch,
   getBatch,
