@@ -9,9 +9,9 @@ var __commonJS = (cb, mod) => function __require() {
   }
 };
 
-// shared/protocol.js
+// autodial-ai/src/management/shared/protocol.js
 var require_protocol = __commonJS({
-  "shared/protocol.js"(exports2, module2) {
+  "autodial-ai/src/management/shared/protocol.js"(exports2, module2) {
     "use strict";
     var HEARTBEAT_INTERVAL_MS2 = 3e3;
     var STALE_AFTER_MS = 1e4;
@@ -25,9 +25,9 @@ var require_protocol = __commonJS({
   }
 });
 
-// agent/ui.js
+// autodial-ai/src/management/agent/ui.js
 var require_ui = __commonJS({
-  "agent/ui.js"(exports2, module2) {
+  "autodial-ai/src/management/agent/ui.js"(exports2, module2) {
     "use strict";
     var fs2 = require("node:fs");
     var path2 = require("node:path");
@@ -51,9 +51,9 @@ var require_ui = __commonJS({
   }
 });
 
-// agent/brain-i18n.js
+// autodial-ai/src/management/agent/brain-i18n.js
 var require_brain_i18n = __commonJS({
-  "agent/brain-i18n.js"(exports2, module2) {
+  "autodial-ai/src/management/agent/brain-i18n.js"(exports2, module2) {
     "use strict";
     var MARKERS = {
       es: /\b(hola|buenos dias|buenas tardes|buenas noches|si|sí|no me interesa|no gracias|gracias|por favor|señor|señora|camion|camionero|dispatch|mi nombre es|me llamo|estoy ocupado|no me llame)\b/i,
@@ -895,9 +895,9 @@ var require_brain_i18n = __commonJS({
   }
 });
 
-// agent/brain.js
+// autodial-ai/src/management/agent/brain.js
 var require_brain = __commonJS({
-  "agent/brain.js"(exports2, module2) {
+  "autodial-ai/src/management/agent/brain.js"(exports2, module2) {
     "use strict";
     var STRATEGY_INFO = {
       intro_company_first: { name: "Company-first introduction", source: "customer config", why: "The lead hears your company, not ours." },
@@ -1206,9 +1206,9 @@ var require_brain = __commonJS({
   }
 });
 
-// agent/voice.js
+// autodial-ai/src/management/agent/voice.js
 var require_voice = __commonJS({
-  "agent/voice.js"(exports2, module2) {
+  "autodial-ai/src/management/agent/voice.js"(exports2, module2) {
     "use strict";
     var { spawnSync } = require("node:child_process");
     var http = require("node:http");
@@ -1503,9 +1503,9 @@ var require_voice = __commonJS({
   }
 });
 
-// agent/hear.js
+// autodial-ai/src/management/agent/hear.js
 var require_hear = __commonJS({
-  "agent/hear.js"(exports2, module2) {
+  "autodial-ai/src/management/agent/hear.js"(exports2, module2) {
     "use strict";
     var { spawnSync } = require("node:child_process");
     var WORDS = [
@@ -2141,9 +2141,9 @@ var require_hear = __commonJS({
   }
 });
 
-// agent/call-runner.js
+// autodial-ai/src/management/agent/call-runner.js
 var require_call_runner = __commonJS({
-  "agent/call-runner.js"(exports2, module2) {
+  "autodial-ai/src/management/agent/call-runner.js"(exports2, module2) {
     "use strict";
     var { makeBrain, scoreLead, shouldEscalate, learn } = require_brain();
     var I18N = require_brain_i18n();
@@ -2351,9 +2351,9 @@ var require_call_runner = __commonJS({
   }
 });
 
-// agent/call.js
+// autodial-ai/src/management/agent/call.js
 var require_call = __commonJS({
-  "agent/call.js"(exports2, module2) {
+  "autodial-ai/src/management/agent/call.js"(exports2, module2) {
     "use strict";
     var { speak } = require_voice();
     var { hear } = require_hear();
@@ -2425,7 +2425,7 @@ var require_call = __commonJS({
   }
 });
 
-// agent/agent.js
+// autodial-ai/src/management/agent/agent.js
 var path = require("node:path");
 var fs = require("node:fs");
 var os = require("node:os");

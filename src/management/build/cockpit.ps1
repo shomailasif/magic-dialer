@@ -182,11 +182,103 @@ $logCard.Controls.Add($lstActivity)
 
 # ---- bottom bar ----
 $ticker = New-Object System.Windows.Forms.Label
-$ticker.Location = New-Object System.Drawing.Point(24, 552)
-$ticker.Size = New-Object System.Drawing.Size(600, 40)
+$ticker.Location = New-Object System.Drawing.Point(24, 500)
+$ticker.Size = New-Object System.Drawing.Size(912, 32)
 $ticker.ForeColor = $cGreen
 $ticker.Font = New-Object System.Drawing.Font("Consolas", 10)
 $form.Controls.Add($ticker)
+
+function Get-NumE164([string]$raw) {
+  $d = ($raw -replace '\D', "")
+  if ($d.Length -lt 10) { return "" }
+  if ($d.Length -ge 12 -and $d.StartsWith("00")) { $d = $d.Substring(2) }
+  elseif ($d.Length -eq 11 -and $d.StartsWith("0")) { $d = "92" + $d.Substring(1) }
+  elseif ($d.Length -eq 10) { $d = "1" + $d }
+  return "+" + $d
+}
+function Go-Get([string]$url) {
+  $r = [System.Net.HttpWebRequest]::Create($url)
+  $r.Method = "GET"; $r.Timeout = 20000
+  $rr = $r.GetResponse()
+  try { return (New-Object IO.StreamReader($rr.GetResponseStream())).ReadToEnd() } finally { $rr.Close() }
+}
+
+# ---- auto-dialer: START -> dials the list for hours, STOP -> stops ----
+$script:autoActive = $false
+$cfgMain = $null
+try { $cfgMain = Get-Content -LiteralPath (Join-Path $cfgDir "config.json") -Raw | ConvertFrom-Json } catch {}
+$script:token  = if ($cfgMain) { [string]$cfgMain.token } else { "" }
+$script:portal = if ($cfgMain) { [string]$cfgMain.portalUrl } else { "" }
+$btnStart = New-Object System.Windows.Forms.Button
+$btnStart.Text = "START AUTO-CALLS"
+$btnStart.Location = New-Object System.Drawing.Point(24, 548)
+$btnStart.Size = New-Object System.Drawing.Size(150, 40)
+$btnStart.BackColor = [System.Drawing.Color]::FromArgb(10, 96, 54); $btnStart.ForeColor = [System.Drawing.Color]::White
+$btnStart.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnStart.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$form.Controls.Add($btnStart)
+
+$btnStop = New-Object System.Windows.Forms.Button
+$btnStop.Text = "STOP"
+$btnStop.Location = New-Object System.Drawing.Point(184, 548)
+$btnStop.Size = New-Object System.Drawing.Size(140, 40)
+$btnStop.BackColor = [System.Drawing.Color]::FromArgb(120, 24, 32); $btnStop.ForeColor = [System.Drawing.Color]::White
+$btnStop.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnStop.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$btnStop.Enabled = $false
+$form.Controls.Add($btnStop)
+
+$btnStart.Add_Click({
+  if ($script:autoActive) { return }
+  $cfg0 = Get-Cfg
+  $nums = @()
+  foreach ($n in @($cfg0.callList)) { $e = Get-NumE164 ([string]$n); if ($e) { $nums += $e } }
+  if ($nums.Count -eq 0) { $ticker.ForeColor = $cRed; $ticker.Text = "> No numbers. Add numbers in Manage first."; return }
+  $script:autoActive = $true
+  $btnStart.Enabled = $false; $btnStop.Enabled = $true
+  try {
+    $json = @{ token = $script:token; numbers = $nums } | ConvertTo-Json -Compress -Depth 4
+    $cc = New-Object System.Net.CookieContainer
+    $null = Post-JsonBody ($script:portal + "/api/autocall") $json $cc
+    $ticker.ForeColor = $cCyan; $ticker.Text = "> AUTO-DIALING started - $($nums.Count) numbers queued. Press STOP anytime."
+  } catch {
+    $ticker.ForeColor = $cRed; $ticker.Text = "> Start failed: " + $_.Exception.Message
+    $script:autoActive = $false; $btnStart.Enabled = $true; $btnStop.Enabled = $false
+  }
+})
+
+$btnStop.Add_Click({
+  if (-not $script:autoActive) { return }
+  try {
+    $json = @{ token = $script:token } | ConvertTo-Json -Compress
+    $cc = New-Object System.Net.CookieContainer
+    $null = Post-JsonBody ($script:portal + "/api/autocall/stop") $json $cc
+  } catch {}
+  $ticker.ForeColor = $cRed; $ticker.Text = "> STOPPING - finishing the current call..."
+  $btnStop.Enabled = $false
+})
+
+$autoTimer = New-Object System.Windows.Forms.Timer
+$autoTimer.Interval = 2500
+$autoTimer.Add_Tick({
+  if (-not $script:autoActive) { return }
+  try {
+    $s = Go-Get ($script:portal + "/api/autocall/status?token=" + [Uri]::EscapeDataString($script:token))
+    $j = $s | ConvertFrom-Json
+    if ($j.ok) {
+      $b = $j.batch
+      if ($b.running) {
+        $ticker.ForeColor = $cCyan
+        if ($b.current) { $ticker.Text = "> Calling $($b.current.number)  [$($b.done)/$($b.total)]" }
+        else { $ticker.Text = "> Auto-dialing...  [$($b.done)/$($b.total) called]" }
+      } else {
+        $script:autoActive = $false; $btnStart.Enabled = $true; $btnStop.Enabled = $false
+        $ticker.ForeColor = $cGreen; $ticker.Text = "> Finished: $($b.done)/$($b.total) numbers processed. Press START to run again."
+      }
+    }
+  } catch {}
+})
+$autoTimer.Start()
 
 $btnTest = New-Object System.Windows.Forms.Button
 $btnTest.Text = "Run a test call"
@@ -405,7 +497,8 @@ function Show-ManageForm {
   $f2.FormBorderStyle = "FixedDialog"
   $f2.MaximizeBox = $false; $f2.MinimizeBox = $false
   $f2.BackColor = $cBg
-  $f2.ClientSize = New-Object System.Drawing.Size(520, 624)
+  $f2.ClientSize = New-Object System.Drawing.Size(520, 706)
+  $f2.AutoScroll = $true
 
   function Add-Lbl($f, $x, $y, $w, $txt) {
     $l = New-Object System.Windows.Forms.Label
@@ -455,6 +548,9 @@ function Show-ManageForm {
   $voipServer    = if ($voip) { [string]$voip.server } else { "" }
   $voipPort      = if ($voip) { [string]$voip.port } else { "" }
   $voipTransport = if ($voip) { [string]$voip.transport } else { "" }
+  $voipAppId     = if ($voip) { [string]$voip.appClientId } else { "" }
+  $voipAppSecret = if ($voip) { [string]$voip.appClientSecret } else { "" }
+  $voipAppJwt    = if ($voip) { [string]$voip.appJwt } else { "" }
 
   $cmbProv = New-Object System.Windows.Forms.ComboBox
   $cmbProv.Items.AddRange(@("ringcentral","twilio","vonage","plivo","flowroute","thinq","myexotel","asterisk","freepbx","generic","sim","custom"))
@@ -485,18 +581,31 @@ function Show-ManageForm {
   $tVTrn = Add-Txt $f2 380 484 116 26; $tVTrn.Text = $voipTransport
 
   function Update-VoipFields {
+    $isRC = ($cmbProv.Text -eq "ringcentral")
     if ($hostedProviders -contains $cmbProv.Text) {
       $tVSrv.Text = [string]$defaultServers[$cmbProv.Text]
       $tVSrv.Enabled = $false; $tVPrt.Enabled = $false; $tVTrn.Enabled = $false
     } else {
       $tVSrv.Enabled = $true; $tVPrt.Enabled = $true; $tVTrn.Enabled = $true
     }
+    $tRCId.Enabled = $isRC; $tRCSecret.Enabled = $isRC; $tRCJwt.Enabled = $isRC
   }
   $cmbProv.Add_SelectedIndexChanged({ Update-VoipFields })
   $cmbProv.Add_TextChanged({ Update-VoipFields })
   Update-VoipFields
 
-  $lblMg = Add-Lbl $f2 24 588 472 30
+  # RingCentral app credentials - the customer's OWN account. If left blank,
+  # calls fall back to the portal's shared test line. Get these at
+  # developer.ringcentral.com under your app (Authentication -> App Client ID &
+  # Secret; optionally the personal JWT credential line).
+  $lblRCA = Add-Lbl $f2 24 524 230 "RINGCENTRAL APP CLIENT ID"
+  $lblRCS = Add-Lbl $f2 270 524 226 "RINGCENTRAL APP CLIENT SECRET"
+  $tRCId = Add-Txt $f2 24 546 230 26; $tRCId.Text = $voipAppId
+  $tRCSecret = Add-Txt $f2 270 546 226 26; $tRCSecret.Text = $voipAppSecret
+  $lblRCJ = Add-Lbl $f2 24 578 472 "PERSONAL JWT TOKEN (OPTIONAL - PREFERRED BY RINGCENTRAL)"
+  $tRCJwt = Add-Txt $f2 24 600 472 26; $tRCJwt.Text = $voipAppJwt
+
+  $lblMg = Add-Lbl $f2 24 672 472 30
   $lblMg.Text = "Changes are applied by the live agent on its next heartbeat. For calls: type full numbers with country code (e.g. +92 300 1234567)."
   $lblMg.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 
@@ -561,7 +670,7 @@ function Show-ManageForm {
 
   $btnSave = New-Object System.Windows.Forms.Button
   $btnSave.Text = "Save"
-  $btnSave.Location = New-Object System.Drawing.Point(24, 530)
+  $btnSave.Location = New-Object System.Drawing.Point(24, 626)
   $btnSave.Size = New-Object System.Drawing.Size(110, 44)
   $btnSave.BackColor = $cPanel2; $btnSave.ForeColor = $cGreen
   $btnSave.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
@@ -570,7 +679,7 @@ function Show-ManageForm {
 
   $btnCancel = New-Object System.Windows.Forms.Button
   $btnCancel.Text = "Close"
-  $btnCancel.Location = New-Object System.Drawing.Point(144, 530)
+  $btnCancel.Location = New-Object System.Drawing.Point(144, 626)
   $btnCancel.Size = New-Object System.Drawing.Size(100, 44)
   $btnCancel.BackColor = $cPanel2; $btnCancel.ForeColor = $cDim
   $btnCancel.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
@@ -579,7 +688,7 @@ function Show-ManageForm {
 
   $btnCall = New-Object System.Windows.Forms.Button
   $btnCall.Text = "CALL NUMBERS NOW"
-  $btnCall.Location = New-Object System.Drawing.Point(254, 530)
+  $btnCall.Location = New-Object System.Drawing.Point(254, 626)
   $btnCall.Size = New-Object System.Drawing.Size(242, 44)
   $btnCall.BackColor = $cPanel2; $btnCall.ForeColor = $cViolet
   $btnCall.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
@@ -587,19 +696,24 @@ function Show-ManageForm {
   $f2.Controls.Add($btnCall)
 
   $btnCall.Add_Click({
+    $logPath = Join-Path $env:TEMP "magicdialer-dial.log"
+    $Tag = ((Get-Date).ToString("yyyy-MM-dd HH:mm:ss"))
+    Add-Content $logPath ("[$Tag] CALL pressed. portal=$portal tokenLen=$($token.Length)")
     $nums = @($tNums.Text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
-    if ($nums.Count -eq 0) { $lblMg.ForeColor = $cRed; $lblMg.Text = "No numbers yet. Type the numbers above, then click CALL NUMBERS NOW."; return }
+    if ($nums.Count -eq 0) { $lblMg.ForeColor = $cRed; $lblMg.Text = "No numbers yet. Type the numbers above, then click CALL NUMBERS NOW."; Add-Content $logPath ("[$Tag] no numbers"); return }
+    Add-Content $logPath ("[$Tag] numbers: " + ($nums -join " | "))
     $lblMg.ForeColor = $cAmber; $lblMg.Text = "Logging in as this agent..."; [System.Windows.Forms.Application]::DoEvents()
     try {
       $cc = New-Object System.Net.CookieContainer
       $loginJson = @{ token = $token } | ConvertTo-Json -Compress
       $null = Post-JsonBody ($portal + "/clogin") $loginJson $cc
+      Add-Content $logPath ("[$Tag] clogin OK")
       $lblMg.ForeColor = $cAmber; $lblMg.Text = "IMPORTANT: RingOut rings THIS line first - answer it, then the called number rings."
       [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 1500; [System.Windows.Forms.Application]::DoEvents()
       $placed = 0; $ringing = 0
       foreach ($rawNum in $nums) {
         $d = ($rawNum -replace '\D', "")
-        if ($d.Length -lt 10) { $lblMg.ForeColor = $cRed; $lblMg.Text = "'$rawNum' looks incomplete - skipped."; [System.Windows.Forms.Application]::DoEvents(); continue }
+        if ($d.Length -lt 10) { $lblMg.ForeColor = $cRed; $lblMg.Text = "'$rawNum' looks incomplete - skipped."; Add-Content $logPath ("[$Tag] skip '$rawNum'"); [System.Windows.Forms.Application]::DoEvents(); continue }
         if ($d.Length -ge 12 -and $d.StartsWith("00")) { $d = $d.Substring(2) }                 # 00 international prefix
         elseif ($d.Length -eq 11 -and $d.StartsWith("0")) { $d = "92" + $d.Substring(1) }      # national 0xx -> +92
         elseif ($d.Length -eq 10) { $d = "1" + $d }                                             # US/CA local -> +1
@@ -608,17 +722,21 @@ function Show-ManageForm {
         try {
           $dialJson = @{ token = $token; number = $e164 } | ConvertTo-Json -Compress
           $resp = Post-JsonBody ($portal + "/api/dial") $dialJson $cc
+          Add-Content $logPath ("[$Tag] dial $e164 -> " + $resp)
           $j = $resp | ConvertFrom-Json
           if ($j.ok) { $placed++; if ($j.status -eq "ringing") { $ringing++ }; $lblMg.ForeColor = $cGreen; $lblMg.Text = "$e164 -> $($j.status)." }
-          else { $lblMg.ForeColor = $cRed; $lblMg.Text = "$e164 failed: $($j.error)" }
+          else { $lblMg.ForeColor = $cRed; $lblMg.Text = "$e164 failed: $($j.error)"; Add-Content $logPath ("[$Tag] dial $e164 server-error: " + $j.error) }
         } catch {
+          Add-Content $logPath ("[$Tag] dial $e164 EXCEPTION: " + $_.Exception.Message)
           $lblMg.ForeColor = $cRed; $lblMg.Text = "$e164 error: $($_.Exception.Message)"
         }
         [System.Windows.Forms.Application]::DoEvents()
         if ($placed -lt $nums.Count) { Start-Sleep -Seconds 2; [System.Windows.Forms.Application]::DoEvents() }
       }
       if ($placed -gt 0) { $lblMg.ForeColor = $cGreen; $lblMg.Text = "Done - $placed call(s) placed ($ringing ringing)." } else { $lblMg.ForeColor = $cRed; $lblMg.Text = "No calls could be placed." }
+      Add-Content $logPath ("[$Tag] done placed=$placed ringing=$ringing")
     } catch {
+      Add-Content $logPath ("[$Tag] OUTER EXCEPTION: " + $_.Exception.Message)
       $lblMg.ForeColor = $cRed; $lblMg.Text = "Login/dial failed: " + $_.Exception.Message
     }
   })
@@ -632,8 +750,12 @@ function Show-ManageForm {
       provider = $voipProvider; number = $tVNum.Text.Trim(); extension = $tVExt.Text.Trim()
       username = $tVUsr.Text.Trim(); sipPassword = $tVPwd.Text
       server = $voipServer; port = $tVPrt.Text.Trim(); transport = $tVTrn.Text.Trim()
+      appClientId = $tRCId.Text.Trim(); appClientSecret = $tRCSecret.Text.Trim(); appJwt = $tRCJwt.Text.Trim()
     }
     if ($voipServer -eq "") { $voipObj.Remove("server") }
+    if (-not $voipObj.appClientId) { $voipObj.Remove("appClientId") }
+    if (-not $voipObj.appClientSecret) { $voipObj.Remove("appClientSecret") }
+    if (-not $voipObj.appJwt) { $voipObj.Remove("appJwt") }
     try {
       $loginJson = @{ token = $token } | ConvertTo-Json -Compress
       $null = Post-JsonBody ($portal + "/clogin") $loginJson $cc
@@ -651,6 +773,7 @@ function Show-ManageForm {
         provider = $voipProvider; number = $tVNum.Text.Trim(); extension = $tVExt.Text.Trim()
         username = $tVUsr.Text.Trim(); sipPassword = $tVPwd.Text
         server = $voipServer; port = $tVPrt.Text.Trim(); transport = $tVTrn.Text.Trim()
+        appClientId = $tRCId.Text.Trim(); appClientSecret = $tRCSecret.Text.Trim(); appJwt = $tRCJwt.Text.Trim()
         ready = ($voipProvider -ne "" -and $tVNum.Text.Trim() -ne "" -and $tVUsr.Text.Trim() -ne "" -and ($hostedProviders -contains $voipProvider -or $voipServer -ne ""))
       }
         [System.IO.File]::WriteAllText((Join-Path $cfgDir "config.json"), ($c2 | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
